@@ -93,6 +93,18 @@ do { \
 Types for Common Functions
 ****************************************************/
 
+void fmi3GetRTLolaStatus()
+{
+    
+}
+
+
+
+void fmi3InitializeRTLola(FMIInstance *instance)
+{
+    
+}
+
 /* Inquire version numbers and setting logging status */
 const char* FMI3GetVersion(FMIInstance *instance) {
     if (instance->logFunctionCall) {
@@ -463,6 +475,7 @@ FMIStatus FMI3EnterInitializationMode(FMIInstance *instance,
     fmi3Float64 startTime,
     fmi3Boolean stopTimeDefined,
     fmi3Float64 stopTime) {
+    printf("FMI3EnterInitializationMode\n");
 
     instance->state = FMIInitializationModeState;
 
@@ -472,7 +485,8 @@ FMIStatus FMI3EnterInitializationMode(FMIInstance *instance,
 }
 
 FMIStatus FMI3ExitInitializationMode(FMIInstance *instance) {
-
+    printf("FMI3ExitInitializationMode\n");
+    
     if (instance->interfaceType == FMIModelExchange) {
         instance->state = FMIEventModeState;
     } else if (instance->interfaceType == FMICoSimulation) {

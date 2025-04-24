@@ -7,8 +7,10 @@
 #include "config.h"
 #include "cosimulation.h"
 
+
 #if FMI_VERSION == 3
 #include "fmi3Functions.h"
+#include "model.h"
 #endif
 
 #ifdef _MSC_VER
@@ -263,7 +265,7 @@ Status setDebugLogging(ModelInstance *comp, bool loggingOn, size_t nCategories, 
     return OK;
 }
 
-static void logMessage(ModelInstance *comp, int status, const char *category, const char *message, va_list args) {
+void logMessage(ModelInstance *comp, int status, const char *category, const char *message, va_list args) {
 
     if (!comp->logger) {
         return;
@@ -317,6 +319,21 @@ void logError(ModelInstance *comp, const char *message, ...) {
     logMessage(comp, Error, "logStatusError", message, args);
     va_end(args);
 }
+
+void logFormatted(ModelInstance *comp, int level, const char *category, const char *format, ...) {
+    if (!comp || !comp->logger || !format) return;  // Null checks
+
+    va_list args;
+    va_start(args, format);
+
+    // Check if logging is enabled for this level/category
+    if (comp->logEvents || level == LOG_ERROR) {
+        logMessage(comp, level, category, format, args);
+    }
+
+    va_end(args);
+}
+
 
 #define GET_NOT_ALLOWED(t) do { \
     UNUSED(vr); \

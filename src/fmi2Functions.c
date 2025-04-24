@@ -1,16 +1,29 @@
 #if FMI_VERSION != 2
 #error FMI_VERSION must be 2
 #endif
+#ifdef _WIN32
+    #include <windows.h>
+    #define POPEN _popen
+    #define PCLOSE _pclose
+#else
+    #include <pthread.h>
+    #define POPEN popen
+    #define PCLOSE pclose
+#endif
+#include <sys/types.h>
 
-#include <stdio.h>
+#include <stdlib.h> 
 #include <string.h>
 #include <stdarg.h>
 #include <assert.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <math.h>
-
 #include "config.h"
 #include "model.h"
 #include "cosimulation.h"
+#include "RTLolaMonitor.h"
+
 
 
 // C-code FMUs have functions names prefixed with MODEL_IDENTIFIER_.
@@ -110,6 +123,7 @@ do { \
 | Terminated)
 #define MASK_fmi2GetInteger              MASK_fmi2GetReal
 #define MASK_fmi2GetBoolean              MASK_fmi2GetReal
+#define MASK_fmi2initializeRTLola        MASK_fmi2GetReal
 #define MASK_fmi2GetString               MASK_fmi2GetReal
 #define MASK_fmi2SetReal                 (Instantiated | InitializationMode \
 | EventMode | ContinuousTimeMode \
@@ -206,21 +220,788 @@ static bool allowedState(ModelInstance *instance, int statesExpected, char *name
 
 }
 
+
+
+
+const char* getVariableName(ValueReference vr) {
+    switch (vr) {
+        case vr_time: return "time";
+        case vr_h:    return "h";
+        case vr_v:    return "v";
+        case vr_g:    return "g";
+        case vr_e:    return "e";
+        case vr_v_min: return "v_min";
+        default:      return "unknown";
+        }
+}
+
+
+
+const char* getHeaderVariableName(const unsigned int vr) {
+    switch (vr) {
+        case vr_time: return "time";
+        case vr_h:    
+        return "h";
+        case vr_v:    return "v";
+        case vr_g:    return "g";
+        case vr_e:    return "e";
+        case vr_v_min: return "v_min";
+        default:     return "unknown";
+    }
+}
+
+    
+double get_variable(unsigned int vr, ModelInstance* instance) {
+    if (!instance) {
+        printf("Error: instance is null\n");
+        return 0.0;
+    }
+    double value = 0.0;
+    size_t index = 0;
+    double valueList []= {0.0};
+    getFloat64(instance, vr, valueList, 1, &index);
+   
+    value = valueList[0];
+    //double value = 0.0;
+    //fmi2Component c = (fmi2Component)instance;
+    //Status status = fmi2GetReal(c, &vr, 1, valueList);
+    //if (status > Error) {
+      //  value = valueList[0];
+        //return value;
+   // }
+    return value; // Return a default value if the call fails
+}
+
+double set_variable(unsigned int vr, double value, ModelInstance* instance) {
+    if (!instance) {
+        printf("Error: instance is null\n");
+        return 0.0;
+    }
+    double valueList []= {value};
+    size_t index = 0;
+    setFloat64(instance, vr, valueList, 1, &index);
+    return value;
+}
+/*
+#############################################
+# RTLola Monitor Functions linear solution  #
+#############################################
+*/
+void RTLolaMonitor_Init(RTLolaMonitor* monitor, const char* spec_path, const unsigned int* vrs, size_t num_vars) {
+    if (!monitor) {
+        fprintf(stderr, "RTLolaMonitor_Init: Monitor is NULL.\n");
+        return;
+    }
+
+    // Copy the specification path
+    monitor->spec_path = strdup(spec_path);
+    if (!monitor->spec_path) {
+        fprintf(stderr, "RTLolaMonitor_Init: Failed to allocate memory for spec_path.\n");
+        return;
+    }
+    printf("RTLola spec path is %s\n", monitor->spec_path);
+
+    // Copy the monitored variables
+    monitor->num_vars = num_vars;
+    if (num_vars > 0) {
+        monitor->monitored_vrs = malloc(num_vars * sizeof(unsigned int));
+        if (!monitor->monitored_vrs) {
+            fprintf(stderr, "RTLolaMonitor_Init: Failed to allocate memory for monitored_vrs.\n");
+            //free(monitor->spec_path); // Clean up spec_path if allocation fails
+            monitor->spec_path = NULL;
+            return;
+        }
+        memcpy(monitor->monitored_vrs, vrs, num_vars * sizeof(unsigned int));
+    } else {
+        monitor->monitored_vrs = NULL;
+    }
+
+    // Initialize pipe file descriptors to invalid values
+    monitor->input_pipe[0] = -1;
+    monitor->input_pipe[1] = -1;
+    monitor->output_pipe[0] = -1;
+    monitor->output_pipe[1] = -1;
+
+    // Initialize process ID to invalid value
+    monitor->child_pid = -1;
+
+    // Initialize file streams to NULL
+    monitor->input_stream = NULL;
+    monitor->output_stream = NULL;
+
+    // Set the monitor as inactive initially
+    monitor->is_active = false;
+}
+
+
+bool RTLolaMonitor_Start(RTLolaMonitor* monitor) {
+    if (!monitor) {
+        fprintf(stderr, "RTLolaMonitor_Start: Monitor is NULL.\n");
+        return 0;
+    }
+
+    if (monitor->is_active) {
+        fprintf(stderr, "RTLolaMonitor_Start: Monitor is already active.\n");
+        return 1;
+    }
+
+    if (pipe(monitor->input_pipe) != 0 || pipe(monitor->output_pipe) != 0) {
+        fprintf(stderr, "RTLolaMonitor_Start: Failed to create pipes.\n");
+        return 0;
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        fprintf(stderr, "RTLolaMonitor_Start: Failed to fork process.\n");
+        return 0;
+    }
+
+    if (pid == 0) { // Child process
+        setvbuf(stdout, NULL, _IOLBF, 0); // Line buffering
+        close(monitor->input_pipe[1]); // Close unused write end
+        close(monitor->output_pipe[0]); // Close unused read end
+
+        dup2(monitor->input_pipe[0], STDIN_FILENO);
+        dup2(monitor->output_pipe[1], STDOUT_FILENO);
+
+        execlp("rtlola-cli", "rtlola-cli", "monitor", "--stdin", "--stdout", "--online", monitor->spec_path, NULL);
+        fprintf(stderr, "Child: Failed to execute rtlola-cli.\n");
+        exit(1);
+    } else { // Parent process
+        close(monitor->input_pipe[0]); // Close unused read end
+        close(monitor->output_pipe[1]); // Close unused write end
+
+        // Set the output pipe to non-blocking mode
+        int flags = fcntl(monitor->output_pipe[0], F_GETFL, 0);
+        fcntl(monitor->output_pipe[0], F_SETFL, flags | O_NONBLOCK);
+
+        monitor->child_pid = pid;
+        monitor->is_active = true;
+
+        monitor->input_stream = fdopen(monitor->input_pipe[1], "w");
+        if (!monitor->input_stream) {
+            fprintf(stderr, "RTLolaMonitor_Start: Failed to open input stream.\n");
+            return 0;
+        }
+
+        monitor->output_stream = fdopen(monitor->output_pipe[0], "r");
+        if (!monitor->output_stream) {
+            fprintf(stderr, "RTLolaMonitor_Start: Failed to open output stream.\n");
+            return 0;
+        }
+        printf("Parent: Input pipe: read=%d, write=%d\n", monitor->input_pipe[0], monitor->input_pipe[1]);
+        printf("Parent: Output pipe: read=%d, write=%d\n", monitor->output_pipe[0], monitor->output_pipe[1]);
+
+    // Debugging: Print the CSV header being sent
+        printf("Parent: Sending CSV header:\n");
+
+        // Write CSV header to the process
+        fprintf(monitor->input_stream, "time");
+        for (size_t i = 0; i < monitor->num_vars; i++) {
+            fprintf(monitor->input_stream, ",%s", getHeaderVariableName(monitor->monitored_vrs[i]));
+        }
+        fprintf(monitor->input_stream, "\n");
+        fflush(monitor->input_stream);
+
+        printf("RTLola process started with PID %d.\n", pid);
+        return 1;
+    }
+}
+
+
+bool is_process_running(pid_t pid) {
+    int status;
+    pid_t result = waitpid(pid, &status, WNOHANG);
+    if (result == 0) {
+        return true; // Process is still running
+    }
+    return false; // Process has terminated
+}
+
+bool rtlola_readoutput(RTLolaMonitor* monitor) {
+    if (!monitor || !monitor->is_active || !monitor->output_stream) {
+        fprintf(stderr, "rtlola_readoutput: Monitor is not active or invalid.\n");
+        return false;
+    }
+
+    // Debugging: Print the current state of the monitor
+    printf("rtlola_readoutput: Reading output from RTLola process (PID %d)\n", monitor->child_pid);
+
+    // Check if the RTLola process is still running
+    if (!is_process_running(monitor->child_pid)) {
+        fprintf(stderr, "RTLola process has terminated.\n");
+        monitor->is_active = false;
+        return false;
+    }
+
+    char buffer[1024];
+    while (true) {
+        if (fgets(buffer, sizeof(buffer), monitor->output_stream) != NULL) {
+            // Debugging: Print the output received from RTLola
+            printf("RTLola Output: %s", buffer);
+        } else {
+            if (feof(monitor->output_stream)) {
+                // Debugging: Print if the pipe is closed
+                fprintf(stderr, "RTLola process closed the output pipe.\n");
+                monitor->is_active = false;
+                return false;
+            } else if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                // Debugging: Print if no data is available
+                printf("No data available (non-blocking)\n");
+                clearerr(monitor->output_stream); // Clear the error flag
+                break;
+            } else {
+                // Debugging: Print the error message
+                fprintf(stderr, "Error reading from RTLola output stream: %s\n", strerror(errno));
+                monitor->is_active = false;
+                RTLolaMonitor_Cleanup(monitor); // Clean up resources
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
+bool RTLolaMonitor_SendData_v2(RTLolaMonitor* monitor, double time, fmi2Component instance) {
+    ModelInstance* tempInstance = (ModelInstance*)instance;
+    if (!monitor || !monitor->is_active || !monitor->input_stream) {
+        fprintf(stderr, "RTLolaMonitor_SendData: Monitor is not active or invalid.\n");
+        return false;
+    }
+
+    // Debugging: Print the data being sent
+    printf("RTLolaMonitor_SendData: Sending data for time=%.6f\n", time);
+
+    // Build and send the CSV line
+    fprintf(monitor->input_stream, "%.6f", time);
+    for (size_t i = 0; i < monitor->num_vars; i++) {
+        double value = get_variable(monitor->monitored_vrs[i], tempInstance);
+        fprintf(monitor->input_stream, ",%.6f", value);
+        // Debugging: Print each variable value
+        printf("RTLolaMonitor_SendData: Sending variable %s=%.6f\n", getHeaderVariableName(monitor->monitored_vrs[i]), value);
+    }
+    fprintf(monitor->input_stream, "\n");
+    fflush(monitor->input_stream);
+    usleep(10000);
+    // Debugging: Print confirmation that data was sent
+    printf("RTLolaMonitor_SendData: Data sent successfully.\n");
+
+    // Read the output immediately after sending data
+    if (!rtlola_readoutput(monitor)) {
+        fprintf(stderr, "Failed to read RTLola output.\n");
+        return false;
+    }
+
+    return true;
+}
+
+
+bool adjustFMUVariables(RTLolaMonitor *monitor, const unsigned int *vrs, fmi2Component instance) {
+    ModelInstance* tempInstance = (ModelInstance*)instance;
+    if (!monitor || !monitor->is_active || !monitor->input_stream) {
+        fprintf(stderr, "AdjustingFMUVariables: Monitor is not active or invalid.\n");
+        return false;
+    }
+    UNUSED(vrs);
+    for (size_t i = 0; i < monitor->num_vars; i++) {
+        double value = set_variable(monitor->monitored_vrs[i], 1.0, tempInstance); // Example value 1.0
+        printf("Setting %s: variable to %f\n", getHeaderVariableName(monitor->monitored_vrs[i]), value);
+    }
+    return true;
+}
+
+void RTLolaMonitor_Cleanup(RTLolaMonitor* monitor) {
+    if (!monitor) return;
+
+    printf("Cleaning up RTLola monitor.\n");
+
+    // Close input and output streams
+    if (monitor->input_pipe[1] != -1 && monitor->input_stream != NULL) {
+        fclose(monitor->input_stream);
+    }
+    if (monitor->output_pipe[0] != -1 && monitor->output_stream != NULL) {
+        fclose(monitor->output_stream);
+    }
+
+    // Terminate the child process
+    if (monitor->child_pid != -1) {
+        kill(monitor->child_pid, SIGTERM);
+        waitpid(monitor->child_pid, NULL, 0);
+    }
+
+    // Free allocated memory
+    if (monitor->spec_path) {
+        free((char*)monitor->spec_path);
+        monitor->spec_path = NULL;
+    }
+    if (monitor->monitored_vrs) {
+        free(monitor->monitored_vrs);
+        monitor->monitored_vrs = NULL;
+    }
+
+    // Reset the monitor state
+    monitor->is_active = false;
+    printf("RTLola monitor cleaned up.\n");
+}
+
+
+/* 
+######################################################
+# RTLola Monitor Functions parallel windows solution #
+######################################################
+
+
+
+
+
+
+void RTLolaMonitor_Init(RTLolaMonitor* monitor, 
+const char* spec_path,
+const unsigned int* vrs,
+size_t num_vars)
+{
+    // Copy specification path
+    #ifdef _WIN32
+    monitor->spec_path = _strdup(spec_path);
+    #else   
+    monitor->spec_path = strdup(spec_path);
+    #endif
+    if (!monitor->spec_path) {
+        fprintf(stderr, "Failed to allocate memory for spec_path.\n");
+        return;
+    }
+    printf("rtlola spec path is %s\n", monitor->spec_path);
+    
+    // Copy monitored variables
+    monitor->num_vars = num_vars;
+    monitor->monitored_vrs = malloc(num_vars * sizeof(unsigned int));
+    if (!monitor->monitored_vrs) {
+        fprintf(stderr, "Failed to allocate memory for monitored_vrs.\n");
+        free((void*)monitor->spec_path); // Clean up spec_path if allocation fails
+        return;
+    }
+    memcpy(monitor->monitored_vrs, vrs, num_vars * sizeof(unsigned int));
+    
+    // Initialize pipe handles and runtime state
+    monitor->hChildStd_IN_Rd = NULL;
+    monitor->hChildStd_IN_Wr = NULL;
+    monitor->hChildStd_OUT_Rd = NULL;
+    monitor->hChildStd_OUT_Wr = NULL;
+    monitor->hProcess = NULL;
+    monitor->hThread = NULL;
+    monitor->is_active = false;
+    
+    // Create a mutex for synchronization
+    monitor->hMutex = CreateMutex(NULL, FALSE, NULL);
+    if (!monitor->hMutex) {
+        fprintf(stderr, "Failed to create mutex. Error: %lu\n", GetLastError());
+        return;
+    }
+}
+
+// Thread function to read rtlola-cli output
+// Thread function to read rtlola-cli output
+
+DWORD WINAPI read_rtlola_output(LPVOID arg) {
+    RTLolaMonitor* monitor = (RTLolaMonitor*)arg;
+    if (!monitor || !monitor->hChildStd_OUT_Rd) {
+        fprintf(stderr, "Invalid monitor or output pipe in thread function.\n");
+        return 1; // Return non-zero to indicate failure
+    }
+
+    char buffer[128];
+    DWORD bytesRead;
+    while (ReadFile(monitor->hChildStd_OUT_Rd, buffer, sizeof(buffer) - 1, &bytesRead, NULL) && bytesRead > 0) {
+        // Discard the output (do not print it)
+        buffer[bytesRead] = '\0'; // Null-terminate the buffer
+        printf("RTLola Output: %s\n", buffer);
+        fflush(stdout); // Ensure the output is flushed
+        
+    }
+
+    return 0; // Return zero to indicate success
+}
+
+bool RTLolaMonitor_Start(RTLolaMonitor* monitor) {
+    if (!monitor) {
+        fprintf(stderr, "Monitor is NULL.\n");
+        return false;
+    }
+
+    if (monitor->is_active) {
+        fprintf(stderr, "Monitor is already active.\n");
+        return true;
+    }
+
+    // Create pipes for stdin and stdout
+    SECURITY_ATTRIBUTES saAttr;
+    saAttr.nLength = sizeof(SECURITY_ATTRIBUTES);
+    saAttr.bInheritHandle = TRUE; // Ensure the pipe handles are inherited by the child process
+    saAttr.lpSecurityDescriptor = NULL;
+
+    // Create a pipe for the child process's STDOUT
+    if (!CreatePipe(&monitor->hChildStd_OUT_Rd, &monitor->hChildStd_OUT_Wr, &saAttr, 0)) {
+        fprintf(stderr, "Failed to create STDOUT pipe. Error: %lu\n", GetLastError());
+        return false;
+    }
+
+    // Create a pipe for the child process's STDIN
+    if (!CreatePipe(&monitor->hChildStd_IN_Rd, &monitor->hChildStd_IN_Wr, &saAttr, 0)) {
+        fprintf(stderr, "Failed to create STDIN pipe. Error: %lu\n", GetLastError());
+        CloseHandle(monitor->hChildStd_OUT_Rd);
+        CloseHandle(monitor->hChildStd_OUT_Wr);
+        return false;
+    }
+
+    // Set up the process startup info
+    STARTUPINFO siStartInfo;
+    ZeroMemory(&siStartInfo, sizeof(STARTUPINFO));
+    siStartInfo.cb = sizeof(STARTUPINFO);
+    siStartInfo.hStdError = monitor->hChildStd_OUT_Wr; // Redirect stderr to stdout
+    siStartInfo.hStdOutput = monitor->hChildStd_OUT_Wr; // Redirect stdout
+    siStartInfo.hStdInput = monitor->hChildStd_IN_Rd;   // Redirect stdin
+    siStartInfo.dwFlags |= STARTF_USESTDHANDLES;
+
+    PROCESS_INFORMATION piProcInfo;
+    ZeroMemory(&piProcInfo, sizeof(PROCESS_INFORMATION));
+
+    // Create the process
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd), "rtlola-cli monitor --stdin --stdout --online %s", monitor->spec_path);
+    if (!CreateProcess(NULL, cmd, NULL, NULL, TRUE, 0, NULL, NULL, &siStartInfo, &piProcInfo)) {
+        fprintf(stderr, "Failed to create process. Error: %lu\n", GetLastError());
+        CloseHandle(monitor->hChildStd_OUT_Rd);
+        CloseHandle(monitor->hChildStd_OUT_Wr);
+        CloseHandle(monitor->hChildStd_IN_Rd);
+        CloseHandle(monitor->hChildStd_IN_Wr);
+        return false;
+    }
+
+    // Close unused pipe ends
+    CloseHandle(monitor->hChildStd_OUT_Wr); // We don't need the write end of the stdout pipe
+    CloseHandle(monitor->hChildStd_IN_Rd);  // We don't need the read end of the stdin pipe
+
+    // Set the process as active
+    monitor->is_active = true;
+    monitor->hProcess = piProcInfo.hProcess;
+    monitor->hThread = piProcInfo.hThread;
+
+    // Build and send the CSV header
+    char header[512];
+    int header_len = snprintf(header, sizeof(header), "time");
+    for (size_t i = 0; i < monitor->num_vars; i++) {
+        header_len += snprintf(header + header_len, sizeof(header) - header_len, ",%s", getHeaderVariableName(monitor->monitored_vrs[i]));
+    }
+    header_len += snprintf(header + header_len, sizeof(header) - header_len, "\n");
+
+    DWORD bytesWritten;
+    if (!WriteFile(monitor->hChildStd_IN_Wr, header, header_len, &bytesWritten, NULL)) {
+        fprintf(stderr, "Failed to write CSV header to rtlola-cli process. Error: %lu\n", GetLastError());
+        return false;
+    }
+
+    // Start a thread to read the output
+    HANDLE output_thread = CreateThread(
+        NULL,                   // Default security attributes
+        0,                      // Default stack size
+        read_rtlola_output,     // Thread function
+        monitor,                // Pass the monitor as an argument
+        0,                      // Default creation flags
+        NULL                    // Don't need the thread ID
+    );
+
+    if (output_thread == NULL) {
+        fprintf(stderr, "Failed to create output thread. Error: %lu\n", GetLastError());
+        return false;
+    }
+
+    // Optionally, close the thread handle if you don't need it
+    CloseHandle(output_thread);
+
+    return true;
+}
+
+
+bool RTLolaMonitor_SendData(RTLolaMonitor* monitor, double time, fmi2Component instance) {
+    ModelInstance* tempInstance = (ModelInstance*)instance;
+    if (!monitor || !monitor->is_active || !monitor->hChildStd_IN_Wr) {
+        fprintf(stderr, "Monitor is not active or invalid.\n");
+        return false;
+    }
+    
+    // Build the data string
+    char buffer[512];
+    int len = snprintf(buffer, sizeof(buffer), "%.6f", time);
+    for (size_t i = 0; i < monitor->num_vars; i++) {
+        double value = get_variable(monitor->monitored_vrs[i], tempInstance);
+        len += snprintf(buffer + len, sizeof(buffer) - len, ",%.6f", value);
+    }
+    len += snprintf(buffer + len, sizeof(buffer) - len, "\n");
+    
+    // Lock the mutex before writing to the pipe
+    WaitForSingleObject(monitor->hMutex, INFINITE);
+    
+    // Write the data to the rtlola-cli process
+    DWORD bytesWritten;
+    if (!WriteFile(monitor->hChildStd_IN_Wr, buffer, len, &bytesWritten, NULL)) {
+        fprintf(stderr, "Failed to write to rtlola-cli process. Error: %lu\n", GetLastError());
+        ReleaseMutex(monitor->hMutex); // Unlock the mutex before returning
+        return false;
+    }
+    
+    // Unlock the mutex
+    ReleaseMutex(monitor->hMutex);
+    
+    return true;
+}
+
+void RTLolaMonitor_Cleanup(RTLolaMonitor* monitor) {
+    if (!monitor) return;
+
+    // Close input and output streams
+    if (monitor->hChildStd_OUT_Rd) {
+        CloseHandle(monitor->hChildStd_OUT_Rd);
+        monitor->hChildStd_OUT_Rd = NULL;
+    }
+    if (monitor->hChildStd_IN_Wr) {
+        CloseHandle(monitor->hChildStd_IN_Wr);
+        monitor->hChildStd_IN_Wr = NULL;
+    }
+
+    // Terminate the RTLola process
+    if (monitor->hProcess) {
+        TerminateProcess(monitor->hProcess, 0); // Forcefully terminate the process
+        CloseHandle(monitor->hProcess);
+        monitor->hProcess = NULL;
+    }
+    if (monitor->hThread) {
+        CloseHandle(monitor->hThread);
+        monitor->hThread = NULL;
+    }
+
+    // Clean up the mutex
+    if (monitor->hMutex) {
+        CloseHandle(monitor->hMutex);
+        monitor->hMutex = NULL;
+    }
+
+    // Free allocated memory
+    if (monitor->spec_path) {
+        free((void*)monitor->spec_path);
+        monitor->spec_path = NULL;
+    }
+    if (monitor->monitored_vrs) {
+        free(monitor->monitored_vrs);
+        monitor->monitored_vrs = NULL;
+    }
+
+    // Reset the monitor state
+    monitor->is_active = false;
+}
+*/
+/*
+############################################
+# RTLola Monitor Functions parallel linux  #
+############################################
+
+
+
+
+// Initialize the monitor by copying the spec path, monitored variables,
+// and setting initial states for pipes and streams. 
+void RTLolaMonitor_Init(RTLolaMonitor* monitor, const char* spec_path, const unsigned int* vrs, size_t num_vars) {
+    if (!monitor) {
+        fprintf(stderr, "RTLolaMonitor_Init: Monitor is NULL.\n");
+        return;
+    }
+    
+    monitor->spec_path = strdup(spec_path);
+    if (!monitor->spec_path) {
+        fprintf(stderr, "RTLolaMonitor_Init: Failed to allocate memory for spec_path.\n");
+        return;
+    }
+    
+    monitor->input_stream = NULL;
+    monitor->output_stream = NULL; 
+    printf("RTLola spec path is %s\n", monitor->spec_path);
+    
+    monitor->num_vars = num_vars;
+    if (num_vars > 0) {
+        monitor->monitored_vrs = malloc(num_vars * sizeof(unsigned int));
+        if (!monitor->monitored_vrs) {
+            fprintf(stderr, "RTLolaMonitor_Init: Failed to allocate memory for monitored_vrs.\n");
+            //free(monitor->spec_path);
+            //monitor->spec_path = NULL;
+            return;
+        }
+        memcpy(monitor->monitored_vrs, vrs, num_vars * sizeof(unsigned int));
+    } else {
+        monitor->monitored_vrs = NULL;
+    }
+    
+    monitor->input_pipe[0] = monitor->input_pipe[1] = -1;
+    monitor->output_pipe[0] = monitor->output_pipe[1] = -1;
+    monitor->child_pid = -1;
+    monitor->input_stream = NULL;
+    monitor->output_stream = NULL;
+    monitor->is_active = false;
+}
+
+void* read_rtlola_output(void* arg) {
+    RTLolaMonitor* monitor = (RTLolaMonitor*)arg;
+    if (!monitor) {
+        fprintf(stderr, "Output thread: Monitor is NULL.\n");
+        return NULL;
+    }
+    
+    monitor->output_stream = fdopen(monitor->output_pipe[0], "r");
+    if (!monitor->output_stream) {
+        fprintf(stderr, "Output thread: Failed to open output stream.\n");
+        return NULL;
+    }
+    
+    char buffer[256];
+    while (fgets(buffer, sizeof(buffer), monitor->output_stream) != NULL) {
+        printf("RTLola Output: %s", buffer);
+        fflush(stdout);
+    }
+    
+    printf("RTLola output thread finished.\n");
+    return NULL;
+}
+
+int RTLolaMonitor_Start(RTLolaMonitor* monitor) {
+    if (!monitor) {
+        fprintf(stderr, "RTLolaMonitor_Start: Monitor is NULL.\n");
+        return 0;
+    }
+    
+    if (monitor->is_active) {
+        fprintf(stderr, "RTLolaMonitor_Start: Monitor is already active.\n");
+        return 1;
+    }
+    
+    if (pipe(monitor->input_pipe) != 0 || pipe(monitor->output_pipe) != 0) {
+        fprintf(stderr, "RTLolaMonitor_Start: Failed to create pipes.\n");
+        return 0;
+    }
+    
+    pid_t pid = fork();
+    if (pid < 0) {
+        fprintf(stderr, "RTLolaMonitor_Start: Failed to fork process.\n");
+        return 0;
+    }
+    
+    if (pid == 0) { // Child process
+    dup2(monitor->input_pipe[0], STDIN_FILENO);
+    dup2(monitor->output_pipe[1], STDOUT_FILENO);
+    
+    close(monitor->input_pipe[1]);
+    close(monitor->output_pipe[0]);
+    
+    setvbuf(stdout, NULL, _IOLBF, 0);
+    
+    execlp("rtlola-cli", "rtlola-cli", "monitor", "--stdin", "--stdout", "--online", monitor->spec_path, NULL);
+    
+    fprintf(stderr, "Child: Failed to execute rtlola-cli.\n");
+    exit(1);
+} else { // Parent process
+close(monitor->input_pipe[0]);
+close(monitor->output_pipe[1]);
+
+monitor->child_pid = pid;
+monitor->is_active = true;
+
+monitor->input_stream = fdopen(monitor->input_pipe[1], "w");
+if (!monitor->input_stream) {
+    fprintf(stderr, "RTLolaMonitor_Start: Failed to open input stream.\n");
+    return 0;
+}
+
+fprintf(monitor->input_stream, "time");
+for (size_t i = 0; i < monitor->num_vars; i++) {
+    fprintf(monitor->input_stream, ",%s", getHeaderVariableName(monitor->monitored_vrs[i]));
+}
+fprintf(monitor->input_stream, "\n");
+fflush(monitor->input_stream);
+
+if (pthread_create(&monitor->reader_thread, NULL, read_rtlola_output, (void *)monitor) != 0) {
+    fprintf(stderr, "RTLolaMonitor_Start: Failed to create output thread.\n");
+    return 0;
+}
+pthread_detach(monitor->reader_thread);
+
+printf("RTLola process started with PID %d.\n", pid);
+return 1;
+}
+}
+
+int RTLolaMonitor_SendData(RTLolaMonitor* monitor, double time, fmi2Component instance) {
+    ModelInstance* tempInstance = (ModelInstance*)instance;
+    if (!monitor || !monitor->is_active || !monitor->input_stream) {
+        fprintf(stderr, "RTLolaMonitor_SendData: Monitor is not active or invalid.\n");
+        return 0;
+    }
+    
+    fprintf(monitor->input_stream, "%.6f", time);
+    for (size_t i = 0; i < monitor->num_vars; i++) {
+        double value = get_variable(monitor->monitored_vrs[i], tempInstance);
+        fprintf(monitor->input_stream, ",%.6f", value);
+    }
+    fprintf(monitor->input_stream, "\n");
+    fflush(monitor->input_stream);
+    
+    printf("Data sent to RTLola.\n");
+    return 1;
+}
+
+void RTLolaMonitor_Cleanup(RTLolaMonitor* monitor) {
+    if (!monitor)
+    return;
+    
+    printf("Cleaning up RTLola monitor.\n");
+    
+    if (monitor->input_pipe[1] != -1 && monitor->input_stream != NULL) {
+        fclose(monitor->input_stream);
+    }
+    if (monitor->output_pipe[0] != -1 && monitor->output_stream != NULL) {
+        fclose(monitor->output_stream);
+    }
+    
+    if (monitor->child_pid != -1) {
+        kill(monitor->child_pid, SIGTERM);
+        waitpid(monitor->child_pid, NULL, 0);
+    }
+    
+    if (monitor->spec_path) {
+        free((char*)monitor->spec_path);
+        monitor->spec_path = NULL;
+    }
+    if (monitor->monitored_vrs) {
+        free(monitor->monitored_vrs);
+        monitor->monitored_vrs = NULL;
+    }
+    
+    monitor->is_active = false;
+    printf("RTLola monitor cleaned up.\n");
+}
+*/
 // ---------------------------------------------------------------------------
 // FMI functions
 // ---------------------------------------------------------------------------
 
 fmi2Component fmi2Instantiate(fmi2String instanceName, fmi2Type fmuType, fmi2String fmuGUID,
-                            fmi2String fmuResourceLocation, const fmi2CallbackFunctions *functions,
-                            fmi2Boolean visible, fmi2Boolean loggingOn) {
+fmi2String fmuResourceLocation, const fmi2CallbackFunctions *functions,
+fmi2Boolean visible, fmi2Boolean loggingOn) {
+    
+UNUSED(visible);
 
-    UNUSED(visible);
-
-    if (!functions || !functions->logger) {
+if (!functions || !functions->logger) {
         return NULL;
     }
-
-    return createModelInstance(
+    fmi2Component fmiC = 
+        createModelInstance(
         (loggerType)functions->logger,
         NULL,
         functions->componentEnvironment,
@@ -229,11 +1010,17 @@ fmi2Component fmi2Instantiate(fmi2String instanceName, fmi2Type fmuType, fmi2Str
         fmuResourceLocation,
         loggingOn,
         (InterfaceType)fmuType);
+   // fmi2initializeRTLola(fmiC);
+    return fmiC;
 }
 
 fmi2Status fmi2SetupExperiment(fmi2Component c, fmi2Boolean toleranceDefined, fmi2Real tolerance,
                             fmi2Real startTime, fmi2Boolean stopTimeDefined, fmi2Real stopTime) {
 
+  
+    printf("ENTERING Set up Expiriment MODE fmi2FUNCTION\n");
+
+   
     UNUSED(toleranceDefined);
     UNUSED(tolerance);
 
@@ -244,21 +1031,35 @@ fmi2Status fmi2SetupExperiment(fmi2Component c, fmi2Boolean toleranceDefined, fm
     S->time = startTime;
     S->nextCommunicationPoint = startTime;
 
+
+
     END_FUNCTION();
 }
 
 fmi2Status fmi2EnterInitializationMode(fmi2Component c) {
 
     BEGIN_FUNCTION(EnterInitializationMode)
-
+  
+    printf("ENTERING INITIALIZATION MODE fmi2FUNCTION\n");
+    //fmi2GetRTLolaStatus();
     S->state = InitializationMode;
+    
+    if(S->RTLola_Mode){
+        CALL(RTLolaMonitor_Start(&S->rtlola_monitor));
+     //  CALL(initializeRTLolaMonitor(S)); 
+    }
 
     END_FUNCTION();
 }
 
 fmi2Status fmi2ExitInitializationMode(fmi2Component c) {
-
+    printf("EXITING INITIALIZATION MODE fmi2FUNCTION\n");
+  
     BEGIN_FUNCTION(ExitInitializationMode);
+    //fmi2InitializeRTLola(c);
+
+
+
 
     // if values were set and no fmi2GetXXX triggered update before,
     // ensure calculated values are updated now
@@ -268,17 +1069,39 @@ fmi2Status fmi2ExitInitializationMode(fmi2Component c) {
     }
 
     S->state = S->type == ModelExchange ? EventMode : StepComplete;
-
+    //fmi2initializeRTLola(c);
     CALL(configurate(S));
 
     END_FUNCTION();
+}
+
+char* modelStateToString(ModelState state) {
+    switch (state) {
+        case StartAndEnd:        return "StartAndEnd";
+        case Instantiated:       return "Instantiated";
+        case InitializationMode: return "InitializationMode";
+        case EventMode:          return "EventMode";
+        case ContinuousTimeMode:return "ContinuousTimeMode";
+        case StepComplete:      return "StepComplete";
+        case StepInProgress:    return "StepInProgress";
+        case StepFailed:        return "StepFailed";
+        case StepCanceled:     return "StepCanceled";
+        case Terminated:        return "Terminated";
+        default:                return "UnknownState";
+    }
 }
 
 fmi2Status fmi2Terminate(fmi2Component c) {
 
     BEGIN_FUNCTION(Terminate)
 
+
+
+    
+    
     S->state = Terminated;
+
+
 
     END_FUNCTION();
 }
@@ -293,6 +1116,8 @@ fmi2Status fmi2Reset(fmi2Component c) {
 }
 
 void fmi2FreeInstance(fmi2Component c) {
+    //Free RTLola monitor
+    RTLolaMonitor_Cleanup(&((ModelInstance*)c)->rtlola_monitor);
     freeModelInstance((ModelInstance*)c);
 }
 
@@ -312,6 +1137,8 @@ const char* fmi2GetTypesPlatform(void) {
 // FMI functions: logging control, setters and getters for Real, Integer,
 // Boolean, String
 // ---------------------------------------------------------------------------
+
+
 
 fmi2Status fmi2SetDebugLogging(fmi2Component c, fmi2Boolean loggingOn, size_t nCategories, const fmi2String categories[]) {
 
@@ -614,17 +1441,20 @@ fmi2Status fmi2CancelStep(fmi2Component c) {
     logError(S, "fmi2CancelStep: Can be called when fmi2DoStep returned fmi2Pending."
         " This is not the case.");
     CALL(Error);
-
+    
     END_FUNCTION();
 }
 
 fmi2Status fmi2DoStep(fmi2Component c, fmi2Real currentCommunicationPoint,
-                    fmi2Real communicationStepSize, fmi2Boolean noSetFMUStatePriorToCurrentPoint) {
-
+    fmi2Real communicationStepSize, fmi2Boolean noSetFMUStatePriorToCurrentPoint) {
+        
+        //fmi2initializeRTLola(c);
     UNUSED(noSetFMUStatePriorToCurrentPoint);
-
+        
     BEGIN_FUNCTION(DoStep);
-
+        
+   // char * currentModelState = modelStateToString(S->state); 
+    //printf("current model state is %s\n", currentModelState);
     if (fabs(currentCommunicationPoint - S->nextCommunicationPoint) > EPSILON) {
         logError(S, "Expected currentCommunicationPoint = %.16g but was %.16g.",
             S->nextCommunicationPoint, currentCommunicationPoint);
@@ -666,11 +1496,27 @@ fmi2Status fmi2DoStep(fmi2Component c, fmi2Real currentCommunicationPoint,
             goto TERMINATE;
         }
     }
-
+    //fmi2ValueReference vr = vr_h;
+    // After the step is complete, retrieve and print the height variable
+    
+    //const unsigned int variablesToChange[] = {vr_h};
+    if (&S->rtlola_monitor.is_active) {
+        //printf("fmi2DoStep: currentCommunicationPoint = %.16g, communicationStepSize = %.16g\n", currentCommunicationPoint, communicationStepSize);
+        
+        CALL(RTLolaMonitor_SendData(&S->rtlola_monitor, S->time, c));
+        //CALL(sendInputDataToRTLola(S));
+        
+       // CALL(adjustFMUVariables(&S->rtlola_monitor, variablesToChange, c));
+        //CALL(adjustFMUVariables(RTLolaMonitor* monitor, , double speedLimit));
+    }
     S->nextCommunicationPoint = currentCommunicationPoint + communicationStepSize;
 
     END_FUNCTION();
 }
+
+
+
+
 
 /* Inquire slave status */
 static Status getStatus(char* fname, ModelInstance* S, const fmi2StatusKind s) {

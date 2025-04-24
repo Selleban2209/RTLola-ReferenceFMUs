@@ -98,6 +98,22 @@ do { \
 Common Functions
 ****************************************************/
 
+ void fmi2GetRTLOLAStatus(void)
+{
+    printf("RTLola Status: OK\n");
+    return;
+}
+
+void fmi2GetRTLolaStatus(void)
+{
+    return;
+}
+
+FMI_STATIC void fmi2initializeRTLola()
+{
+    return ;
+}
+
 /* Inquire version numbers of header files and setting logging status */
 const char* FMI2GetTypesPlatform(FMIInstance *instance) {
 
@@ -264,15 +280,20 @@ FMIStatus FMI2SetupExperiment(FMIInstance *instance,
     fmi2Real startTime,
     fmi2Boolean stopTimeDefined,
     fmi2Real stopTime) {
+
+    printf("SETUP EXPERIMENT\n");
     CALL_ARGS(SetupExperiment, "toleranceDefined=%d, tolerance=%.16g, startTime=%.16g, stopTimeDefined=%d, stopTime=%.16g", toleranceDefined, tolerance, startTime, stopTimeDefined, stopTime);
 }
 
-FMIStatus FMI2EnterInitializationMode(FMIInstance *instance) {
+FMIStatus FMI2EnterInitializationMode(FMIInstance *instance,char *spec ) {
+
+    printf("ENTERING INITIALIZATION MODE\n");
     instance->state = FMIInitializationModeState;
-    CALL(EnterInitializationMode);
+    CALL_ARGS(EnterInitializationMode, " specification %s ", spec);
 }
 
 FMIStatus FMI2ExitInitializationMode(FMIInstance *instance) {
+    printf("EXITING INITIALIZATION MODE\n");
     instance->state = instance->interfaceType == FMIModelExchange ? FMIEventModeState : FMIStepModeState;
     CALL(ExitInitializationMode);
 }

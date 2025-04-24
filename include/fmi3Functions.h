@@ -208,14 +208,22 @@ Functions for Model Exchange
 #define fmi3GetNumberOfContinuousStates   fmi3FullName(fmi3GetNumberOfContinuousStates)
 
 /***************************************************
-Functions for Co-Simulation
-****************************************************/
+ Functions for Co-Simulation
+ ****************************************************/
 
 /* Simulating the FMU */
 #define fmi3EnterStepMode            fmi3FullName(fmi3EnterStepMode)
 #define fmi3GetOutputDerivatives     fmi3FullName(fmi3GetOutputDerivatives)
 #define fmi3DoStep                   fmi3FullName(fmi3DoStep)
 #define fmi3ActivateModelPartition   fmi3FullName(fmi3ActivateModelPartition)
+
+
+/***************************************************
+Functions for RTLola 
+****************************************************/
+#define fmi3GetRTLolaStatus             fmi3FullName(fmi3GetRTLolaStatus)
+#define fmi3InitializeRTLola             fmi3FullName(fmi3InitializeRTLola)
+
 
 /***************************************************
 Common Functions
@@ -333,6 +341,15 @@ FMI3_Export fmi3DoStepTYPE               fmi3DoStep;
 /***************************************************
 Functions for Scheduled Execution
 ****************************************************/
+
+/***************************************************
+  RTLola functions 
+****************************************************/
+FMI3_Export fmi3GetRTLolaStatusTYPE fmi3GetRTLolaStatus;
+FMI3_Export fmi3InitializeRTLolaTYPE fmi3InitializeRTLola;
+
+
+
 
 FMI3_Export fmi3ActivateModelPartitionTYPE fmi3ActivateModelPartition;
 

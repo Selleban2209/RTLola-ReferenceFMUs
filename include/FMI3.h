@@ -134,8 +134,23 @@ struct FMI3Functions_ {
 
     fmi3ActivateModelPartitionTYPE          *fmi3ActivateModelPartition;
 
+
+    
+    /***************************************************
+    RTLola functions 
+    ****************************************************/
+
+    fmi3GetRTLolaStatusTYPE *fmi3GetRTLolaStatus;
+    fmi3InitializeRTLolaTYPE *fmi3InitializeRTLola;
+
 };
 
+
+/***************************************************
+RTLola functions 
+****************************************************/
+FMI_STATIC void fmi3GetRTLolaStatus ();
+FMI_STATIC void fmi3InitializeRTLola (FMIInstance *instance);
 
 /***************************************************
 Common Functions

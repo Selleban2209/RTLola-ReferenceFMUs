@@ -1,4 +1,8 @@
 #pragma once
+#ifndef MODEL_H
+#define MODEL_H
+
+#define MODEL_H_INCLUDED  
 
 #if FMI_VERSION != 1 && FMI_VERSION != 2 && FMI_VERSION != 3
 #error FMI_VERSION must be one of 1, 2 or 3
@@ -10,7 +14,18 @@
 #include <stdbool.h> // for bool
 #include <stdint.h>
 
+
+
+#include <stdio.h>     // For printf(), perror(), etc.
+#include <stdlib.h>    // For exit(), EXIT_FAILURE, etc.
+#include <unistd.h>    // For pipe(), fork(), dup2(), execlp(), close()
+#include <sys/types.h> // For pid_t
+#include <sys/wait.h>  // For wait() (if you need to wait for the child process)
+#include <string.h>    // For string operations like memset(), strcpy()
+#include <stdarg.h>
 #include "config.h"
+#include "RTLolaMonitor.h"
+#include "cJSON.h"
 
 #if FMI_VERSION == 1
 
@@ -74,8 +89,20 @@ typedef enum {
     Discard,
     Error,
     Fatal,
-    Pending
+    Pending,
+    Yes
 } Status;
+
+typedef enum {
+    LOG_ERROR = Error,
+    LOG_WARNING = Warning,
+    LOG_INFO = OK,
+    LOG_DEBUG = OK,  // Custom level for verbose output
+
+} LogLevel;
+
+// Helper macro for conditional logging
+
 
 #if FMI_VERSION < 3
 typedef void (*loggerType) (void *componentEnvironment, const char *instanceName, int status, const char *category, const char *message, ...);
@@ -117,6 +144,18 @@ typedef struct {
     lockPreemptionType lockPreemption;
     unlockPreemptionType unlockPreemption;
 
+
+    //Rtlola monitoring
+    FILE *rtlola_input;
+    FILE *rtlola_output;
+    char *rtlola_spec;
+    bool RTLola_Mode;
+    ValueReference *rtlola_var_refs;
+    size_t rtlola_num_vars;
+    RTLolaMonitor rtlola_monitor;
+
+
+    bool logCustomLogger;
     bool logEvents;
     bool logErrors;
 
@@ -138,7 +177,7 @@ typedef struct {
 
     // internal solver steps
     uint64_t nSteps;
-
+  
     // Co-Simulation
     bool earlyReturnAllowed;
     bool eventModeUsed;
@@ -221,6 +260,18 @@ Status getPartialDerivative(ModelInstance *comp, ValueReference unknown, ValueRe
 Status getEventIndicators(ModelInstance *comp, double z[], size_t nz);
 Status eventUpdate(ModelInstance *comp);
 
+//RTLOLa funcitonality 
+void setMonitorValueRefrences(ModelInstance *comp);
+Status getMonitorValues(ModelInstance *comp);
+const char* getRTLolaHeaderVariableName(const unsigned int vr);
+//Unused
+void setRTLolaMode(ModelInstance *comp);
+void startRTLolaMonitor(ModelInstance *comp);
+//void sendDataToRTLola(ModelInstance *comp);
+void checkRTLolaAlerts(ModelInstance *comp);
+void stopRTLolaMonitor(ModelInstance *comp); 
+char* modelStateToString(ModelState state);
+
 bool invalidNumber(ModelInstance *comp, const char *f, const char *arg, size_t actual, size_t expected);
 bool invalidState(ModelInstance *comp, const char *f, int statesExpected);
 bool nullPointer(ModelInstance* comp, const char *f, const char *arg, const void *p);
@@ -228,6 +279,7 @@ void logError(ModelInstance *comp, const char *message, ...);
 Status setDebugLogging(ModelInstance *comp, bool loggingOn, size_t nCategories, const char * const categories[]);
 void logEvent(ModelInstance *comp, const char *message, ...);
 void logError(ModelInstance *comp, const char *message, ...);
+void logFormatted(ModelInstance *comp, int level, const char *category, const char *format, ...);
 
 Status getFMUState(ModelInstance* comp, void** FMUState);
 Status setFMUState(ModelInstance* comp, void* FMUState);
@@ -247,3 +299,21 @@ Status setFMUState(ModelInstance* comp, void* FMUState);
         return Error; \
     } \
 } while (0)
+
+
+/*
+#define LOG(comp, level, category, format, ...) \
+do { \
+if (comp->logger && (comp->logEvents || level == LOG_ERROR)) { \
+va_list args; \
+va_start(args, format); \
+logMessage(comp, level, category, format, args); \
+va_end(args); \
+} \
+} while (0)
+*/
+
+
+
+
+#endif // MODEL_H

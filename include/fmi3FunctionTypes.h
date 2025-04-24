@@ -624,12 +624,16 @@ typedef fmi3Status fmi3DoStepTYPE(fmi3Instance instance,
 /***************************************************
 Types for Functions for Scheduled Execution
 ****************************************************/
+typedef void fmi3GetRTLolaStatusTYPE();
+
+typedef void fmi3InitializeRTLolaTYPE(fmi3Instance instance);
 
 /* tag::ActivateModelPartition[] */
 typedef fmi3Status fmi3ActivateModelPartitionTYPE(fmi3Instance instance,
                                                   fmi3ValueReference clockReference,
                                                   fmi3Float64 activationTime);
 /* end::ActivateModelPartition[] */
+
 
 #ifdef __cplusplus
 }  /* end of extern "C" { */

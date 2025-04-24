@@ -50,7 +50,7 @@ int main(int argc, char* argv[]) {
 
     // initialize
     // determine continuous and discrete states
-    CALL(FMI2EnterInitializationMode(S));
+    CALL(FMI2EnterInitializationMode(S, NULL));
 
     CALL(applyContinuousInputs(S, time, false));
     CALL(applyDiscreteInputs(S, time));

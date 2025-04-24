@@ -63,7 +63,7 @@
     <ScalarVariable name="time" valueReference="0" causality="independent" variability="continuous" description="Simulation time">
       <Real/>
     </ScalarVariable>
-    <ScalarVariable name="h" valueReference="1" causality="output" variability="continuous" initial="exact" description="Position of the ball">
+    <ScalarVariable name="h" valueReference="1" causality="output" variability="discrete" initial="exact" description="Position of the ball">
       <Real start="1" reinit="true" declaredType="Position"/>
     </ScalarVariable>
     <ScalarVariable name="der(h)" valueReference="2" causality="local" variability="continuous" initial="calculated" description="Derivative of h">
@@ -84,12 +84,19 @@
     <ScalarVariable name="v_min" valueReference="7" variability="constant" description="Velocity below which the ball stops bouncing">
       <Real start="0.1" declaredType="Velocity"/>
     </ScalarVariable>
+     <ScalarVariable name="rtlola_spec" valueReference="100" causality="parameter" variability="fixed">
+      <String start="Set me!"/>
+    </ScalarVariable>
+    <ScalarVariable name="rtlola_vars" valueReference="101" causality="input" variability="discrete">
+        <Integer start="0"/>
+    </ScalarVariable>
   </ModelVariables>
 
   <ModelStructure>
     <Outputs>
       <Unknown index="2"/>
       <Unknown index="4"/>
+      <Unknown index="9"/> <!-- Added monitoringSpecPath as an output -->
     </Outputs>
     <Derivatives>
       <Unknown index="3"/>
@@ -98,6 +105,7 @@
     <InitialUnknowns>
       <Unknown index="3" dependencies="4" dependenciesKind="constant"/>
       <Unknown index="5" dependencies="6" dependenciesKind="constant"/>
+      <Unknown index="9"/> <!-- Added monitoringSpecPath to InitialUnknowns -->
     </InitialUnknowns>
   </ModelStructure>
 

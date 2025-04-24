@@ -1,16 +1,39 @@
+#ifndef FMI_VERSION
+#define FMI_VERSION 3
+#endif
+
 #if FMI_VERSION != 3
 #error FMI_VERSION must be 3
 #endif
 
-#include <stdio.h>
+#ifdef _WIN32
+    #include <windows.h>
+    #define POPEN _popen
+    #define PCLOSE _pclose
+#else
+    #include <pthread.h>
+    #define POPEN popen
+    #define PCLOSE pclose
+#endif
+#include <sys/types.h>
+
+
+#include <stdlib.h> 
 #include <string.h>
 #include <stdarg.h>
 #include <assert.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <math.h>
-
 #include "config.h"
 #include "model.h"
+#include "cJSON.c"
 #include "cosimulation.h"
+#include "RTLolaMonitor.h"
+#include "RTLolaNative.h"
+#include "RTLolaParser.h"
+
+
 
 // C-code FMUs have functions names prefixed with MODEL_IDENTIFIER_.
 // Define DISABLE_PREFIX to build a binary FMU.
@@ -234,6 +257,1052 @@ static bool allowedState(ModelInstance *instance, int statesExpected, char *name
     return true;
 }
 
+
+
+    
+
+
+double set_variable(unsigned int vr, double value, ModelInstance* instance) {
+    if (!instance) {
+        printf("Error: instance is null\n");
+        return 0.0;
+    }
+    double valueList []= {value};
+    size_t index = 0;
+    setFloat64(instance, vr, valueList, 1, &index);
+    return value;
+}
+
+const char* getVariableType(fmi3Instance instance, fmi3ValueReference vr) {
+    // Query the variable attributes to determine its type
+    fmi3Float64 realValue;
+    fmi3Int64 intValue;
+    fmi3Boolean boolValue;
+    fmi3String stringValue;
+
+    // Try to get the variable as a Real
+    if (fmi3GetFloat64(instance, &vr, 1, &realValue, 1) == fmi3OK) {
+        return "Float64";
+    }
+
+    // Try to get the variable as an Integer
+    if (fmi3GetInt64(instance, &vr, 1, &intValue, 1) == fmi3OK) {
+        return "Int64";
+    }
+
+    // Try to get the variable as a Boolean
+    if (fmi3GetBoolean(instance, &vr, 1, &boolValue, 1) == fmi3OK) {
+        return "Boolean";
+    }
+
+    // Try to get the variable as a String
+    if (fmi3GetString(instance, &vr, 1, &stringValue, 1) == fmi3OK) {
+        return "String";
+    }
+
+    // If none of the above, the type is unknown
+    return "Unknown";
+}
+
+// Parse JSON specification (placeholder implementation)
+void logMismatch(const char* inputName, const char* expectedType, const char* providedType) {
+    fprintf(stderr, "Type mismatch for RTLola input '%s': expected %s, got %s\n",
+            inputName, expectedType, providedType);
+    
+}
+
+bool RTLolaMonitor_ValidateTypes(RTLolaMonitor* monitor, fmi3Instance instance) {
+
+    //divide the these 3 checks individually for debugging 
+
+    if (!monitor) {
+        fprintf(stderr, "RTLolaMonitor_ValidateTypes: Monitor is NULL.\n");
+    }
+    if (!instance) {
+        fprintf(stderr, "RTLolaMonitor_ValidateTypes: Instance is NULL.\n");
+    }
+    if (!monitor->rtlola_spec) {
+        fprintf(stderr, "RTLolaMonitor_ValidateTypes: RTLola specification is NULL.\n");
+        
+    }
+    if (!monitor || !monitor->rtlola_spec || !monitor->monitored_vrs) {
+        fprintf(stderr, "RTLolaMonitor_ValidateTypes: Invalid monitor or specification.\n");
+       // return false;
+    }
+
+
+    for (size_t i = 0; i < monitor->num_vars; i++) {
+        const char* var_name = getRTLolaHeaderVariableName(monitor->monitored_vrs[i]);
+        bool found = false;
+
+        // Search for the variable in the RTLola specification inputs
+        for (int j = 0; j < monitor->rtlola_spec->input_count; j++) {
+            if (strcmp(monitor->rtlola_spec->inputs[j].name, var_name) == 0) {
+                monitor->rtlola_spec->inputs[j].vr = monitor->monitored_vrs[i];
+                
+                found = true;
+
+                // Get the type from the FMU
+                const char* actual_type = getVariableType(instance, monitor->monitored_vrs[i]);
+                if (!actual_type) {
+                    fprintf(stderr, "Variable %s not found in FMU.\n", var_name);
+                    return false;
+                }
+
+                // Check if the type matches
+                const char* expected_type = monitor->rtlola_spec->inputs[j].type_;
+                if (strcmp(expected_type, actual_type) != 0) {
+                    logMismatch(var_name, expected_type, actual_type);
+                    monitor->is_active = false;
+                    RTLolaMonitor_Cleanup(monitor);
+                    return false;
+                }
+                break;
+            }
+        }
+
+        if (!found) {
+            fprintf(stderr, "Variable %s not found in RTLola specification.\n", var_name);
+            return false;
+        }
+    }
+
+    return true;
+}
+
+
+void Native_RTLolaMonitor_Instantiate(ModelInstance *comp, const char* spec_path, const unsigned int* vrs, size_t num_vars, bool execMode) {
+    
+    if (!comp) {
+        fprintf(stderr, "RTLolaMonitor_Instantiate: Component is NULL.\n");
+        return;
+    }
+    RTLolaMonitor* monitor = &comp->rtlola_monitor;
+    if (!monitor) {
+        fprintf(stderr, "RTLolaMonitor_Init: Monitor is NULL.\n");
+        return;
+    }
+
+    monitor->execMode = execMode;
+
+    monitor->spec_path = strdup(spec_path);
+    if (!monitor->spec_path) {
+        fprintf(stderr, "RTLolaMonitor_Init: Failed to allocate memory for spec_path.\n");
+        return;
+    }
+
+    monitor->num_vars = num_vars;
+    if (num_vars > 0) {
+        monitor->monitored_vrs = malloc(num_vars * sizeof(unsigned int));
+        if (!monitor->monitored_vrs) {
+            fprintf(stderr, "RTLolaMonitor_Init: Failed to allocate memory for monitored_vrs.\n");
+            //free(monitor->spec_path); // Clean up spec_path if allocation fails
+            monitor->spec_path = NULL;
+            return;
+        }
+        memcpy(monitor->monitored_vrs, vrs, num_vars * sizeof(unsigned int));
+    } else {
+        monitor->monitored_vrs = NULL;
+    }  
+    /*
+    if(!fileExists(monitor->spec_path)) {
+        free(monitor->monitored_vrs);
+        monitor->monitored_vrs = NULL;
+        free(monitor->spec_path);
+        monitor->spec_path = NULL;
+        logFormatted(comp, LOG_ERROR, "RTLOLA", 
+        "Spec file not found: %s", 
+        comp->rtlola_spec);
+        return;
+        
+        
+    }
+    logFormatted(comp, LOG_INFO, "RTLOLA", 
+    "Loading specification file: %s", 
+    comp->rtlola_spec);
+    */
+   
+
+    monitor->is_active = false;
+}
+
+
+void RTLolaMonitor_Init(RTLolaMonitor* monitor, const char* spec_path, const unsigned int* vrs, size_t num_vars, bool execMode) {
+    if (!monitor) {
+        fprintf(stderr, "RTLolaMonitor_Init: Monitor is NULL.\n");
+        return;
+    }
+    monitor->execMode = execMode;
+    // Copy the specification path
+    monitor->spec_path = strdup(spec_path);
+    if (!monitor->spec_path) {
+        fprintf(stderr, "RTLolaMonitor_Init: Failed to allocate memory for spec_path.\n");
+        return;
+    }
+    printf("RTLola spec path is %s\n", monitor->spec_path);
+
+    // Copy the monitored variables
+    monitor->num_vars = num_vars;
+    if (num_vars > 0) {
+        monitor->monitored_vrs = malloc(num_vars * sizeof(unsigned int));
+        if (!monitor->monitored_vrs) {
+            fprintf(stderr, "RTLolaMonitor_Init: Failed to allocate memory for monitored_vrs.\n");
+            //free(monitor->spec_path); // Clean up spec_path if allocation fails
+            monitor->spec_path = NULL;
+            return;
+        }
+        memcpy(monitor->monitored_vrs, vrs, num_vars * sizeof(unsigned int));
+    } else {
+        monitor->monitored_vrs = NULL;
+    }
+    
+    
+    char *json_spec = parse_specification(monitor->spec_path);
+    RTLolaMonitor_ParseSpec(monitor, json_spec);
+  
+    // Initialize pipe file descriptors to invalid values
+    monitor->input_pipe[0] = -1;
+    monitor->input_pipe[1] = -1;
+    monitor->output_pipe[0] = -1;
+    monitor->output_pipe[1] = -1;
+
+    // Initialize process ID to invalid value
+    monitor->child_pid = -1;
+
+    // Initialize file streams to NULL
+    monitor->input_stream = NULL;
+    monitor->output_stream = NULL;
+
+    // Set the monitor as inactive initially
+    monitor->is_active = false;
+}
+
+bool RTLolaMonitor_Start(RTLolaMonitor* monitor) {
+    if (!monitor) {
+        fprintf(stderr, "RTLolaMonitor_Start: Monitor is NULL.\n");
+        return 0;
+    }
+
+    if (monitor->is_active) {
+        fprintf(stderr, "RTLolaMonitor_Start: Monitor is already active.\n");
+        return 1;
+    }
+
+    if (pipe(monitor->input_pipe) != 0 || pipe(monitor->output_pipe) != 0) {
+        fprintf(stderr, "RTLolaMonitor_Start: Failed to create pipes.\n");
+        return 0;
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        fprintf(stderr, "RTLolaMonitor_Start: Failed to fork process.\n");
+        return 0;
+    }
+
+    char* execModeArg;
+    char* timeFormatArg;
+    
+    if (monitor->execMode) {
+        execModeArg = "--online";
+        timeFormatArg = NULL; // No time format needed for online mode
+    } else {
+        execModeArg = "--offline";
+        timeFormatArg = "relative-float-secs"; // Time format for offline mode
+    }
+
+    if (pid == 0) { // Child process
+        setvbuf(stdout, NULL, _IOLBF, 0); // Line buffering
+        close(monitor->input_pipe[1]); // Close unused write end
+        close(monitor->output_pipe[0]); // Close unused read end
+
+        dup2(monitor->input_pipe[0], STDIN_FILENO);
+        dup2(monitor->output_pipe[1], STDOUT_FILENO);
+
+        if (monitor->execMode) {
+            // Online mode: Do not pass timeFormatArg
+            execlp("rtlola-cli", "rtlola-cli", "monitor", "--stdin", "--stdout", execModeArg, monitor->spec_path, NULL);
+        } else {
+            // Offline mode: Pass timeFormatArg
+            execlp("rtlola-cli", "rtlola-cli", "monitor", "--stdin", "--stdout", execModeArg, timeFormatArg, monitor->spec_path, NULL);
+        }
+    
+        fprintf(stderr, "Child: Failed to execute rtlola-cli.\n");
+        exit(1);
+    } else { // Parent process
+        close(monitor->input_pipe[0]); // Close unused read end
+        close(monitor->output_pipe[1]); // Close unused write end
+
+        // Set the output pipe to non-blocking mode
+        int flags = fcntl(monitor->output_pipe[0], F_GETFL, 0);
+        fcntl(monitor->output_pipe[0], F_SETFL, flags | O_NONBLOCK);
+
+        monitor->child_pid = pid;
+        monitor->is_active = true;
+
+        monitor->input_stream = fdopen(monitor->input_pipe[1], "w");
+        if (!monitor->input_stream) {
+            fprintf(stderr, "RTLolaMonitor_Start: Failed to open input stream.\n");
+            return 0;
+        }
+
+        monitor->output_stream = fdopen(monitor->output_pipe[0], "r");
+        if (!monitor->output_stream) {
+            fprintf(stderr, "RTLolaMonitor_Start: Failed to open output stream.\n");
+            return 0;
+        }
+       // printf("Parent: Input pipe: read=%d, write=%d\n", monitor->input_pipe[0], monitor->input_pipe[1]);
+       // printf("Parent: Output pipe: read=%d, write=%d\n", monitor->output_pipe[0], monitor->output_pipe[1]);
+
+    // Debugging: Print the CSV header being sent
+        printf("Parent: Sending CSV header:\n");
+
+        // Write CSV header to the process
+        fprintf(monitor->input_stream, "time");
+
+        for (size_t i = 0; i < monitor->num_vars; i++) {
+            fprintf(monitor->input_stream, ",%s", getRTLolaHeaderVariableName(monitor->monitored_vrs[i]));
+        }
+        fprintf(monitor->input_stream, "\n");
+        fflush(monitor->input_stream);
+
+        printf("RTLola process started with PID %d.\n", pid);
+        return 1;
+    }
+}
+
+bool rtlola_readoutput(RTLolaMonitor* monitor) {
+    if (!monitor || !monitor->is_active || !monitor->output_stream) {
+        fprintf(stderr, "rtlola_readoutput: Monitor is not active or invalid.\n");
+        return false;
+    }
+
+    char buffer[1024];
+    char result[4096] = {0}; // Adjust size as needed
+    size_t total_read = 0;
+    int retry_count = 0;
+    const int max_retries = 5; // Maximum number of retries
+    const int retry_delay_us = 1000; // Delay between retries in microseconds
+
+    // Read the entire output buffer
+    while (total_read < sizeof(result) - 1) {
+        size_t bytes_read = fread(buffer, 1, sizeof(buffer) - 1, monitor->output_stream);
+
+        if (bytes_read > 0) {
+            // Append the read data to the result buffer
+            memcpy(result + total_read, buffer, bytes_read);
+            total_read += bytes_read;
+            retry_count = 0; // Reset retry count on successful read
+        } else {
+            if (feof(monitor->output_stream)) {
+                // End of stream
+                break;
+            } else if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                // No data available, retry after a short delay
+                if (retry_count < max_retries) {
+                    usleep(retry_delay_us);
+                    retry_count++;
+                } else {
+                    fprintf(stderr, "Timeout: No data available after %d retries.\n", max_retries);
+                    break;
+                }
+            } else {
+                // Error reading from the stream
+                fprintf(stderr, "Error reading from RTLola output stream: %s\n", strerror(errno));
+                monitor->is_active = false;
+                RTLolaMonitor_Cleanup(monitor);
+                return false;
+            }
+        }
+    }
+
+    // Null-terminate the result buffer
+    result[total_read] = '\0';
+
+   
+   
+    // Print the RTLola output
+    if (total_read > 0) {
+        printf("RTLola Output:\n%s\n", result);
+
+        // Evaluate triggers based on the output
+        if(monitor->rtlola_spec){
+            RTLolaMonitor_EvaluateTriggers(monitor, result);
+        }
+    } else {
+        printf("No output from RTLola.\n");
+    }
+
+    return true;
+
+}
+
+bool RTLolaMonitor_HandleSpecSwitch(ModelInstance* comp) {
+    if (!comp) {
+        fprintf(stderr, "RTLolaMonitor_HandleSpecSwitch: ModelInstance is NULL.\n");
+        return false;
+    }
+
+    // Check if a spec switch is requested
+    if (comp->rtlola_monitor.spec_switch_requested) {
+        printf("Handling RTLola specification switch...\n");
+
+        // Stop the current RTLola process
+        printf("Stopping current RTLola process...\n");
+        RTLolaMonitor_Cleanup(&comp->rtlola_monitor);
+
+        // Update the monitor's specification path
+        if (comp->rtlola_spec) {
+            printf("Updating specification path to: %s\n", comp->rtlola_spec);
+
+            // Free the old specification path if it exists
+            if (comp->rtlola_monitor.spec_path) {
+                free((char*)comp->rtlola_monitor.spec_path);
+                comp->rtlola_monitor.spec_path = NULL;
+            }
+
+            // Allocate memory for the new specification path and copy it
+            comp->rtlola_monitor.spec_path = strdup(comp->rtlola_spec);
+            if (!comp->rtlola_monitor.spec_path) {
+                fprintf(stderr, "RTLolaMonitor_HandleSpecSwitch: Failed to allocate memory for new spec path.\n");
+                return false;
+            }
+        }
+
+        const unsigned int monitored_vrs[] = {vr_h};  // Add more as needed
+        const size_t num_vars = sizeof(monitored_vrs)/sizeof(monitored_vrs[0]);
+        // Allocate memory for the new monitored_vrs and copy the values
+        comp->rtlola_monitor.num_vars = num_vars;
+        comp->rtlola_monitor.monitored_vrs = malloc(comp->rtlola_monitor.num_vars * sizeof(unsigned int));
+        if (!comp->rtlola_monitor.monitored_vrs) {
+            fprintf(stderr, "RTLolaMonitor_HandleSpecSwitch: Failed to allocate memory for monitored_vrs.\n");
+            return false;
+        }
+        
+        memcpy(comp->rtlola_monitor.monitored_vrs, monitored_vrs, comp->rtlola_monitor.num_vars * sizeof(unsigned int));
+        printf("Updating monitored variables... numeber of vars and monitored_vrs %ld %d\n", comp->rtlola_monitor.num_vars, comp->rtlola_monitor.monitored_vrs[0]);
+        
+        // Parse the new RTLola specification
+        //RTLolaMonitor_ParseSpec(&comp->rtlola_monitor,  "bouncing_ball.json");
+        
+        // Update the number of monitored variables
+        //comp->rtlola_monitor.num_vars = comp->rtlola_num_vars;
+
+        // Start a new RTLola process with the new specification
+        comp->rtlola_monitor.spec_switch_requested = false;
+        printf("Starting new RTLola process...\n");
+        if (!RTLolaMonitor_Start(&comp->rtlola_monitor)) {
+            fprintf(stderr, "RTLolaMonitor_HandleSpecSwitch: Failed to restart RTLola with new spec.\n");
+            return false;
+        }
+
+        // Clear the spec switch flag
+
+        printf("RTLola specification switch completed successfully.\n");
+    }
+
+    return true;
+}
+
+bool RTLolaMonitor_SendData_v3(RTLolaMonitor* monitor, double time, fmi3Instance instance) {
+    // ModelInstance* tempInstance = (ModelInstance*)instance;
+     if (!monitor || !monitor->is_active || !monitor->input_stream) {
+         fprintf(stderr, "RTLolaMonitor_SendData: Monitor is not active or invalid.\n");
+         return false;
+     }
+     
+     // Debugging: Print the data being sent
+     printf("RTLolaMonitor_SendData: Sending data for time=%.6f\n", time);
+ 
+     // Build and send the CSV line
+     fprintf(monitor->input_stream, "%.6f", time);
+    // double values[1]; // Array to store the retrieved value
+     double valueList []= {0.0};
+     for (size_t i = 0; i < monitor->num_vars; i++) {
+         size_t nValues = 1; // Number of values to retrieve
+         //size_t index =0;
+         // Retrieve the value using fmi3GetFloat64
+         fmi3Status valueStatus = fmi3GetFloat64(instance, &monitor->monitored_vrs[i], monitor->num_vars, valueList, nValues);
+         
+         if (valueStatus != fmi3OK) {
+             fprintf(stderr, "Failed to retrieve value for variable %u.\n", monitor->monitored_vrs[i]);
+             return false;
+         }
+ 
+         // Use the retrieved value
+         double value = valueList[0];
+         fprintf(monitor->input_stream, ",%.6f", value);
+         
+        // Debugging: Print each variable value
+        //printf("RTLolaMonitor_SendData: Sending variable %s=%.6f\n", getRTLolaHeaderVariableName(monitor->monitored_vrs[i]), value);
+     }
+     fprintf(monitor->input_stream, "\n");
+     fflush(monitor->input_stream);
+ 
+     // Debugging: Print confirmation that data was sent
+     //printf("RTLolaMonitor_SendData: Data sent successfully.\n");
+ 
+     // Read the output immediately after sending data
+     if (!rtlola_readoutput(monitor)) {
+         fprintf(stderr, "Failed to read RTLola output.\n");
+         return false;
+     }
+ 
+     return true;
+}
+
+
+
+const char** extract_input_names_from_spec(const RTLolaSpec* spec) {
+    if (!spec || !spec->inputs) {
+        fprintf(stderr, "extract_input_names: Invalid spec\n");
+        return NULL;
+    }
+
+    const char** names = (const char**)malloc(spec->input_count * sizeof(const char*));
+    if (!names) {
+        fprintf(stderr, "extract_input_names: Memory allocation failed\n");
+        return NULL;
+    }
+
+    for (int i = 0; i < spec->input_count; i++) {
+        if (!spec->inputs[i].name) {
+            fprintf(stderr, "extract_input_names: Input %d missing name\n", i);
+            return NULL;
+        }
+        names[i] = strdup(spec->inputs[i].name);
+        if (!names[i]) {
+            fprintf(stderr, "extract_input_names: strdup failed for input %d\n", i);
+        
+            return NULL;
+        }
+    }
+
+    return names;
+}
+
+void free_input_names(const char** names) {
+    if (!names) return;
+    
+    // Free each string in the array
+    for (const char** name_ptr = names; *name_ptr; name_ptr++) {
+        free((void*)*name_ptr); // Cast away const to free
+    }
+    
+    // Free the array itself
+    free(names);
+}
+
+bool Native_RTLolaMonitor_Init(RTLolaMonitor *monitor, fmi3Instance instance) {
+    // Validate input parameters
+    
+    if (!monitor || !monitor->spec_path) {
+        fprintf(stderr, "Error: Invalid monitor or spec path\n");
+        return false;
+    }
+   
+    // Extract basic configuration from monitor
+    const char* spec_path = monitor->spec_path;
+    uint64_t num_vars = monitor->num_vars;
+    
+    char *json_spec = parse_specification(monitor->spec_path);
+    RTLolaMonitor_ParseSpec(monitor, json_spec);
+
+    // Extract input names from specification
+    const char** input_names = extract_input_names_from_spec(monitor->rtlola_spec);
+    if (!input_names) {
+        fprintf(stderr, "Error: Failed to extract input names from spec\n");
+        return false;
+    }
+    monitor->input_names = input_names;
+
+    // Create new RTLola monitor instance
+    RTLolaMonitorHandle* handle = rtlola_monitor_new(
+        spec_path,      // Path to specification file
+        1000,          // Timeout in milliseconds
+        input_names,    // Array of input names
+        num_vars        // Number of input variables
+    );
+    
+    if (!handle) {
+        fprintf(stderr, "Error: Failed to create RTLola monitor instance\n");
+        free_input_names(input_names);
+        return false;
+    }
+    logFormatted(instance, LOG_INFO, "RTLOLA",
+        "Created RTLola monitor instance with spec: %s\n", spec_path);
+
+    // Store handle and start monitoring
+    monitor->rtlola_handle = handle;
+    
+    return true;
+}
+
+
+bool Native_RTLolaMonitor_Start(RTLolaMonitor *monitor, fmi3Instance instance) 
+{
+    // Start the monitor
+    logFormatted(instance, LOG_INFO, "RTLOLA",
+        "Starting RTLola monitor...\n");
+
+
+    if (!rtlola_monitor_start(monitor->rtlola_handle)) {
+        fprintf(stderr, "Error: Failed to start RTLola monitor\n");
+        rtlola_monitor_free(monitor->rtlola_handle);
+        free_input_names(monitor->input_names);
+        return false;
+    }
+    return true;
+}
+
+bool Native_Handle_Spec_Switch(RTLolaMonitor* monitor, fmi3Instance instance, ModelState state) {
+    if (!monitor) {
+        fprintf(stderr, "Error: Invalid monitor or spec path\n");
+        return false;
+    }
+
+    if (!monitor->spec_switch_requested) {
+        return false;
+    }
+   
+    
+    if (state ==  InitializationMode){
+        logFormatted(instance, LOG_INFO, "RTLOLA",
+            "Setting initial RTLola specification...\n");
+    } else  {
+        logFormatted(instance, LOG_INFO, "RTLOLA",
+            "Handling RTLola specification switch...\n");
+
+        logFormatted(instance, LOG_INFO, "RTLOLA",
+            "Setting new RTLola specification...\n");
+    }
+
+    // 1. Stop current monitor if active
+    if (monitor->rtlola_handle) {
+        rtlola_monitor_free(monitor->rtlola_handle);
+        monitor->rtlola_handle = NULL;
+    }
+
+    // 2. Update specification path
+  
+    if (!monitor->spec_path) {
+        fprintf(stderr, "Error: Failed to allocate memory for new spec path\n");
+        return false;
+    }
+
+    // 3. Parse new specification
+    char* json_spec = parse_specification(monitor->spec_path);
+    printf("Parsed new specficaition successfully\n");
+    logFormatted(instance, LOG_INFO, "RTLOLA",
+        "Parsed new RTLola specification ");
+    RTLolaMonitor_ParseSpec(monitor, json_spec);
+    if (!json_spec) {
+        fprintf(stderr, "Error: Failed to parse new specification\n");
+        return false;
+    }
+
+    // 4. Extract input names via Rust FFI
+    const char** input_names = extract_input_names_from_spec(monitor->rtlola_spec);
+    if (!input_names) {
+        fprintf(stderr, "Error: Failed to extract input names\n");
+      //  free(json_spec);
+        return false;
+    }
+    monitor->input_names = input_names;
+    const char* new_spec_path = monitor->spec_path;
+    // 5. Create new monitor instance
+    RTLolaMonitorHandle* handle = rtlola_monitor_new(
+        new_spec_path,
+        1000, // timeout_ms
+        input_names,
+        monitor->num_vars
+    );
+    printf("Starting new RTLola monitor instance...\n");
+    
+    //free(json_spec);
+      
+
+
+    if (!handle) {
+        fprintf(stderr, "Error: Failed to create new monitor instance\n");
+        return false;
+    }
+
+    RTLolaMonitor_ValidateTypes(monitor, instance); 
+    // 6. Start new monitor
+    
+    // 7. Update monitor state
+    monitor->rtlola_handle = handle;
+    monitor->spec_switch_requested = false;
+   // printf("Restarting with a new RTLola monitor instance...\n");
+    //Native_RTLolaMonitor_Start(monitor);
+    
+    return true;
+}
+
+bool Native_RTLolaMonitor_SendData(RTLolaMonitor *monitor, fmi3Instance instance) {
+    if (!monitor || !monitor->rtlola_handle || !instance) {
+        fprintf(stderr, "Error: Invalid monitor or instance\n");
+        return false;
+    }
+
+
+    size_t num_vars = monitor->num_vars;
+    if (num_vars == 0) {
+        fprintf(stderr, "Warning: No variables to monitor\n");
+        return true;
+    }
+
+    // Allocate array of input structures
+    RTLolaInput *inputs = malloc(num_vars * sizeof(RTLolaInput));
+    if (!inputs) {
+        fprintf(stderr, "Error: Failed to allocate memory for inputs\n");
+        return false;
+    }
+
+    // Get current simulation time
+    fmi3Float64 currentTime;
+    fmi3ValueReference time_vr = vr_time;
+    if (fmi3GetFloat64(instance, &time_vr, 1, &currentTime, 1) != fmi3OK) {
+        fprintf(stderr, "Error: Failed to get simulation time\n");
+        free(inputs);
+        return false;
+    }
+
+    // Populate each input with actual values from FMU
+    for (size_t i = 0; i < num_vars; i++) {
+        fmi3ValueReference vr = monitor->monitored_vrs[i];
+        inputs[i].name = monitor->input_names[i];
+  
+        // Determine type and get value
+        const char* type_str = getVariableType(instance, vr);
+        if (!type_str) {
+            fprintf(stderr, "Error: Failed to determine type for variable %zu\n", i);
+            continue;
+        }
+
+        //Getter functions for only the types supported by RTLola
+        if (strcmp(type_str, "Float64") == 0) {
+            inputs[i].type = RTLOLA_TYPE_FLOAT64;
+            if (fmi3GetFloat64(instance, &vr, 1, &inputs[i].value.float64_val, 1) != fmi3OK) {
+                fprintf(stderr, "Warning: Failed to get Float64 value for %s\n", inputs[i].name);
+            }
+        }
+        else if (strcmp(type_str, "Int64") == 0) {
+            inputs[i].type = RTLOLA_TYPE_INT64;
+            if (fmi3GetInt64(instance, &vr, 1, &inputs[i].value.int64_val, 1) != fmi3OK) {
+                fprintf(stderr, "Warning: Failed to get Int64 value for %s\n", inputs[i].name);
+            }
+        }
+        else if (strcmp(type_str, "UInt64") == 0) {
+            inputs[i].type = RTLOLA_TYPE_UINT64;
+            if (fmi3GetUInt64(instance, &vr, 1, &inputs[i].value.uint64_val, 1) != fmi3OK) {
+                fprintf(stderr, "Warning: Failed to get UInt64 value for %s\n", inputs[i].name);
+            }
+        }
+        else if (strcmp(type_str, "Boolean") == 0) {
+            inputs[i].type = RTLOLA_TYPE_BOOL;
+            fmi3Boolean temp;
+            if (fmi3GetBoolean(instance, &vr, 1, &temp, 1) == fmi3OK) {
+                inputs[i].value.bool_val = temp;
+            } else {
+                fprintf(stderr, "Warning: Failed to get Boolean value for %s\n", inputs[i].name);
+            }
+        }
+        else if (strcmp(type_str, "String") == 0) {
+            inputs[i].type = RTLOLA_TYPE_STRING;
+            fmi3String temp;
+            if (fmi3GetString(instance, &vr, 1, &temp, 1) == fmi3OK) {
+                inputs[i].value.string_val = temp;
+            } else {
+                fprintf(stderr, "Warning: Failed to get String value for %s\n", inputs[i].name);
+            }
+        }
+        else {
+            fprintf(stderr, "Warning: Unknown type '%s' for variable %s\n", 
+                    type_str, inputs[i].name);
+            inputs[i].type = RTLOLA_TYPE_FLOAT64; // Default fallback
+            inputs[i].value.float64_val = 0.0;
+        }
+    }
+
+    // Process all inputs at current time
+    char *result = rtlola_process_inputs(monitor->rtlola_handle, inputs, num_vars, currentTime);
+    monitor->last_output = result; 
+
+    logFormatted(instance, LOG_INFO, "RTLOLA",
+        "RTLola Evaluation process result: \n%s", result ? result : "NULL");
+    if (result != NULL) {
+       //printf("%s\n", result);
+        // set rtlola_output variable to output of RTLola process 
+        const fmi3String output = monitor->last_output;  // fmi3String is const char*
+        const fmi3ValueReference vr_output = vr_rtlola_output; 
+        fmi3SetString(instance, &vr_output, 1, &output, 1);
+        rtlola_free_string(result); // Don't forget to free the memory!
+        
+
+
+    } else {
+        printf("Error processing inputs\n");
+    }
+
+    
+    // Cleanup
+    free(inputs);
+    return true;
+}
+/*
+Functions for RTLola evalutations
+*/
+
+
+void RTLolaMonitor_ParseSpec(RTLolaMonitor* monitor, const char* json_spec) {
+
+
+    if (!monitor || !json_spec) {
+        fprintf(stderr, "Invalid arguments passed to RTLolaMonitor_ParseSpec.\n");
+        return;
+    }
+    
+    // Parse the JSON string
+    cJSON *json = cJSON_Parse(json_spec);
+    if (!json) {
+        fprintf(stderr, "Error parsing JSON: %s\n", cJSON_GetErrorPtr());
+        return;
+    }
+
+    // Allocate memory for the RTLola specification
+    monitor->rtlola_spec = (RTLolaSpec*)malloc(sizeof(RTLolaSpec));
+    if (!monitor->rtlola_spec) {
+        fprintf(stderr, "Memory allocation failed for RTLolaSpec.\n");
+        cJSON_Delete(json);
+        return;
+    }
+
+    // Parse inputs
+    cJSON *inputs = cJSON_GetObjectItemCaseSensitive(json, "inputs");
+    if (inputs && cJSON_IsArray(inputs)) {
+        monitor->rtlola_spec->input_count = cJSON_GetArraySize(inputs);
+        monitor->rtlola_spec->inputs = malloc(monitor->rtlola_spec->input_count * sizeof(Input));
+
+        if (monitor->rtlola_spec->inputs) {
+            for (int i = 0; i < monitor->rtlola_spec->input_count; i++) {
+                cJSON *input = cJSON_GetArrayItem(inputs, i);
+                cJSON *name = cJSON_GetObjectItemCaseSensitive(input, "name");
+                cJSON *type_ = cJSON_GetObjectItemCaseSensitive(input, "type_");
+
+                if (cJSON_IsString(name) && cJSON_IsString(type_)) {
+                    monitor->rtlola_spec->inputs[i].name = strdup(name->valuestring);
+                    monitor->rtlola_spec->inputs[i].type_ = strdup(type_->valuestring);
+                } else {
+                    monitor->rtlola_spec->inputs[i].name = NULL;
+                    monitor->rtlola_spec->inputs[i].type_ = NULL;
+                }
+            }
+        }
+    } else {
+        fprintf(stderr, "Invalid or missing 'inputs' array in JSON.\n");
+        monitor->rtlola_spec->inputs = NULL;
+        monitor->rtlola_spec->input_count = 0;
+    }
+
+    // Parse outputs (if needed)
+    cJSON *outputs = cJSON_GetObjectItemCaseSensitive(json, "outputs");
+    if (outputs && cJSON_IsArray(outputs)) {
+        monitor->rtlola_spec->output_count = cJSON_GetArraySize(outputs);
+        monitor->rtlola_spec->outputs = malloc(monitor->rtlola_spec->output_count * sizeof(Output));
+
+        if (monitor->rtlola_spec->outputs) {
+            for (int i = 0; i < monitor->rtlola_spec->output_count; i++) {
+                cJSON *output = cJSON_GetArrayItem(outputs, i);
+                cJSON *variable = cJSON_GetObjectItemCaseSensitive(output, "variable");
+                cJSON *comparison = cJSON_GetObjectItemCaseSensitive(output, "comparison");
+
+                if (cJSON_IsString(variable) && cJSON_IsString(comparison)) {
+                    monitor->rtlola_spec->outputs[i].variable = strdup(variable->valuestring);
+                    monitor->rtlola_spec->outputs[i].comparison = strdup(comparison->valuestring);
+                } else {
+                    monitor->rtlola_spec->outputs[i].variable = NULL;
+                    monitor->rtlola_spec->outputs[i].comparison = NULL;
+                }
+            }
+        }
+    } else {
+        fprintf(stderr, "Invalid or missing 'outputs' array in JSON.\n");
+        monitor->rtlola_spec->outputs = NULL;
+        monitor->rtlola_spec->output_count = 0;
+    }
+
+    // Parse triggers
+    cJSON *triggers = cJSON_GetObjectItemCaseSensitive(json, "triggers");
+    if (triggers && cJSON_IsArray(triggers)) {
+        monitor->rtlola_spec->trigger_count = cJSON_GetArraySize(triggers);
+        monitor->rtlola_spec->triggers = malloc(monitor->rtlola_spec->trigger_count * sizeof(Trigger));
+
+        if (monitor->rtlola_spec->triggers) {
+            for (int i = 0; i < monitor->rtlola_spec->trigger_count; i++) {
+                cJSON *trigger = cJSON_GetArrayItem(triggers, i);
+                cJSON *condition = cJSON_GetObjectItemCaseSensitive(trigger, "condition");
+                cJSON *message = cJSON_GetObjectItemCaseSensitive(trigger, "message");
+
+                if (cJSON_IsString(condition) && cJSON_IsString(message)) {
+                    monitor->rtlola_spec->triggers[i].condition = strdup(condition->valuestring);
+                    monitor->rtlola_spec->triggers[i].message = strdup(message->valuestring);
+                } else {
+                    monitor->rtlola_spec->triggers[i].condition = NULL;
+                    monitor->rtlola_spec->triggers[i].message = NULL;
+                }
+            }
+        }
+    } else {
+        fprintf(stderr, "Invalid or missing 'triggers' array in JSON.\n");
+        monitor->rtlola_spec->triggers = NULL;
+        monitor->rtlola_spec->trigger_count = 0;
+    }
+   /*
+   logFormatted(comp, LOG_DEBUG, "RTLOLA", 
+   "Parsing spec: %s (inputs=%d, triggers=%d)", 
+   json_spec, 
+   monitor->rtlola_spec->input_count, 
+   monitor->rtlola_spec->trigger_count);
+   
+   if (!json_spec) {
+    logFormatted(comp, LOG_ERROR, "RTLOLA", 
+    "Failed to parse spec: %s", 
+    monitor->spec_path);
+    return;
+    }
+
+    logFormatted(comp, LOG_INFO, "RTLOLA", 
+    "Spec parsed successfully: %s", 
+    monitor->spec_path);
+
+    */
+        
+    // Clean up
+    cJSON_Delete(json);
+}
+
+
+
+
+// Evaluate triggers based on feedback
+void RTLolaMonitor_EvaluateTriggers(RTLolaMonitor* monitor, const char* output) {
+    if (!monitor || !monitor->rtlola_spec || !output) return;
+
+    for (int i = 0; i < monitor->rtlola_spec->trigger_count; i++) {
+        if (strstr(output, monitor->rtlola_spec->triggers[i].message)) {
+            printf("Trigger detected: %s\n", monitor->rtlola_spec->triggers[i].message);
+            RTLolaMonitor_TakeActions(monitor, monitor->rtlola_spec->triggers[i].message);
+        }
+    }
+}
+
+// Take actions based on triggered conditions
+void RTLolaMonitor_TakeActions(RTLolaMonitor* monitor, const char* trigger_message) {
+    if (!monitor || !trigger_message) return;
+
+    // Example: Take actions based on the trigger message, or any abitrary condition you want to monitor
+    if (strcmp(trigger_message, "Ball in motion") == 0) {
+        // Action for "Ball in motion"
+        printf("Action: Ball is in motion.\n");
+    } else if (strcmp(trigger_message, "Ball hit ground") == 0) {
+        // Action for "Ball hit ground"
+        printf("Action: Ball hit the ground.\n");
+    }
+    // Add more actions as needed
+}
+
+void RTLolaMonitor_Cleanup(RTLolaMonitor* monitor) {
+    if (!monitor) return;
+
+    printf("Cleaning up RTLola monitor.\n");
+
+    // Close input and output streams
+    if (monitor->input_stream) {
+        fclose(monitor->input_stream);
+        monitor->input_stream = NULL;
+    }
+    if (monitor->output_stream) {
+        fclose(monitor->output_stream);
+        monitor->output_stream = NULL;
+    }
+
+    // Close pipe file descriptors
+    if (monitor->input_pipe[0] != -1) close(monitor->input_pipe[0]);
+    if (monitor->input_pipe[1] != -1) close(monitor->input_pipe[1]);
+    if (monitor->output_pipe[0] != -1) close(monitor->output_pipe[0]);
+    if (monitor->output_pipe[1] != -1) close(monitor->output_pipe[1]);
+
+    // Terminate the child process
+    if (monitor->child_pid != -1) {
+        kill(monitor->child_pid, SIGTERM);
+        waitpid(monitor->child_pid, NULL, 0);
+        monitor->child_pid = -1;
+    }
+
+    // Free allocated memory
+    if (monitor->spec_path) {
+        free((char*)monitor->spec_path);
+        monitor->spec_path = NULL;
+    }
+    if (monitor->monitored_vrs) {
+        free(monitor->monitored_vrs);
+        monitor->monitored_vrs = NULL;
+    }
+
+    if (monitor->rtlola_spec) {
+        // Free inputs
+        if (monitor->rtlola_spec->inputs) {
+            for (int i = 0; i < monitor->rtlola_spec->input_count; i++) {
+                if (monitor->rtlola_spec->inputs[i].name) {
+                    free((char*)monitor->rtlola_spec->inputs[i].name);
+                }
+                if (monitor->rtlola_spec->inputs[i].type_) {
+                    free((char*)monitor->rtlola_spec->inputs[i].type_);
+                }
+            }
+            free(monitor->rtlola_spec->inputs);
+        }
+
+        // Free outputs
+        if (monitor->rtlola_spec->outputs) {
+            for (int i = 0; i < monitor->rtlola_spec->output_count; i++) {
+                if (monitor->rtlola_spec->outputs[i].variable) {
+                    free((char*)monitor->rtlola_spec->outputs[i].variable);
+                }
+                if (monitor->rtlola_spec->outputs[i].comparison) {
+                    free((char*)monitor->rtlola_spec->outputs[i].comparison);
+                }
+            }
+            free(monitor->rtlola_spec->outputs);
+        }
+
+        // Free triggers
+        if (monitor->rtlola_spec->triggers) {
+            for (int i = 0; i < monitor->rtlola_spec->trigger_count; i++) {
+                if (monitor->rtlola_spec->triggers[i].condition) {
+                    free((char*)monitor->rtlola_spec->triggers[i].condition);
+                }
+                if (monitor->rtlola_spec->triggers[i].message) {
+                    free((char*)monitor->rtlola_spec->triggers[i].message);
+                }
+            }
+            free(monitor->rtlola_spec->triggers);
+        }
+
+        free(monitor->rtlola_spec);
+        monitor->rtlola_spec = NULL;
+    }
+
+    // Reset the monitor state
+    monitor->is_active = false;
+    monitor->spec_switch_requested = false;
+    monitor->spec_switch_pending = false;
+
+    //printf("RTLola monitor cleaned up.\n");
+}
+
+
 /***************************************************
  Common Functions
  ****************************************************/
@@ -305,6 +1374,8 @@ fmi3Instance fmi3InstantiateCoSimulation(
     UNUSED(requiredIntermediateVariables);
     UNUSED(nRequiredIntermediateVariables);
 
+
+    
 #ifndef EVENT_UPDATE
     if (eventModeUsed) {
         if (logMessage) {
@@ -329,6 +1400,12 @@ fmi3Instance fmi3InstantiateCoSimulation(
         instance->eventModeUsed      = eventModeUsed;
         instance->state              = Instantiated;
     }
+    //fmi3InitializeRTLola(instance);
+    
+    logFormatted(instance, LOG_INFO, "FMI CALL", 
+    "FMU for co-simulation instantiated: name='%s', resourceLocation='%s'", 
+    instanceName, resourcePath);
+    
 
     return instance;
 }
@@ -378,12 +1455,14 @@ fmi3Instance fmi3InstantiateScheduledExecution(
         instance->lockPreemption = lockPreemption;
         instance->unlockPreemption = unlockPreemption;
     }
+     
 
     return instance;
 #endif
 }
 
 void fmi3FreeInstance(fmi3Instance instance) {
+    RTLolaMonitor_Cleanup(&((ModelInstance*)instance)->rtlola_monitor);
     freeModelInstance((ModelInstance*)instance);
 }
 
@@ -394,6 +1473,9 @@ fmi3Status fmi3EnterInitializationMode(fmi3Instance instance,
                                        fmi3Boolean stopTimeDefined,
                                        fmi3Float64 stopTime) {
 
+  
+
+ 
     UNUSED(toleranceDefined);
     UNUSED(tolerance);
 
@@ -405,11 +1487,32 @@ fmi3Status fmi3EnterInitializationMode(fmi3Instance instance,
     S->nextCommunicationPoint = startTime;
     S->state = InitializationMode;
 
+
+    logFormatted(S, LOG_INFO, "FMI CALL",
+        "FMU for %s: Entering initialization mode: startTime=%.6f, stopTime=%.6f",
+        S->type == ModelExchange ? "model exchange" : "co-simulation",
+        S->startTime, S->stopTime);
+
+    if(S->RTLola_Mode){
+
+        CALL(Native_RTLolaMonitor_Init(&S->rtlola_monitor, S));
+
+        if(RTLolaMonitor_ValidateTypes(&S->rtlola_monitor, S)){
+
+            //CALL(RTLolaMonitor_Start(&S->rtlola_monitor));
+        }   
+     //  CALL(initializeRTLolaMonitor(S)); 
+    }
+    if (&S->rtlola_monitor && S->rtlola_monitor.spec_switch_requested) {
+        // Handle specification switch
+        CALL(Native_Handle_Spec_Switch(&S->rtlola_monitor, S, S->state));
+    } 
+   
+    
     END_FUNCTION();
 }
 
 fmi3Status fmi3ExitInitializationMode(fmi3Instance instance) {
-
     BEGIN_FUNCTION(ExitInitializationMode);
 
     // if values were set and no fmi3GetXXX triggered update before,
@@ -430,7 +1533,11 @@ fmi3Status fmi3ExitInitializationMode(fmi3Instance instance) {
             S->state = ClockActivationMode;
             break;
     }
-
+    if(S->rtlola_monitor.rtlola_handle){
+        CALL(Native_RTLolaMonitor_Start(&S->rtlola_monitor, S));
+    }
+    logFormatted(S, LOG_INFO, "FMI CALL",
+        "Exiting initialization mode");
     CALL(configurate(S));
 
     END_FUNCTION();
@@ -450,7 +1557,9 @@ fmi3Status fmi3Terminate(fmi3Instance instance) {
     BEGIN_FUNCTION(Terminate);
 
     S->state = Terminated;
-
+    logFormatted(S, LOG_INFO, "FMI CALL",
+        "fmi3Terminate %s",
+        S->type == ModelExchange ? "model exchange" : "co-simulation");
     END_FUNCTION();
 }
 
@@ -1322,6 +2431,14 @@ fmi3Status fmi3DoStep(fmi3Instance instance,
 
     BEGIN_FUNCTION(DoStep);
 
+    /*if (!RTLolaMonitor_HandleSpecSwitch(S)) {
+        return fmi3Error; // Exit if the spec switch failed
+    }*/
+    if(Native_Handle_Spec_Switch(&S->rtlola_monitor, S, S->state)){
+        CALL(Native_RTLolaMonitor_Start(&S->rtlola_monitor, S));
+    }
+
+
     if (fabs(currentCommunicationPoint - S->nextCommunicationPoint) > EPSILON) {
         logError(S, "Expected currentCommunicationPoint = %.16g but was %.16g.",
             S->nextCommunicationPoint, currentCommunicationPoint);
@@ -1403,7 +2520,18 @@ fmi3Status fmi3DoStep(fmi3Instance instance,
     } else {
         S->nextCommunicationPoint = S->time;
     }
+    if (&S->rtlola_monitor.is_active) {
+        logFormatted(S, 
+            LOG_INFO,                   // Severity level
+            "FMI CALL",               // Category
+            "Do Step: t=%.3f, stepsize=%.3f",     // Format string
+            S->time, communicationStepSize           // Arguments matching format
+            );
+        CALL(Native_RTLolaMonitor_SendData(&S->rtlola_monitor, S));
+    }
 
+
+    
     END_FUNCTION();
 }
 

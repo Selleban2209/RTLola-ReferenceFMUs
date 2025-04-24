@@ -175,6 +175,11 @@ Types for Common Functions
                                               fmi2Boolean loggingOn);
    typedef void          fmi2FreeInstanceTYPE(fmi2Component c);
 
+   typedef void fmi2GetRTLolaStatusTYPE();
+
+   typedef fmi2Status fmi2InitializeRTLolaTYPE(fmi2Component c);
+   typedef fmi2Status fmi2SendDataToRTLolaTYPE(fmi2Component c);
+
 /* Enter and exit initialization mode, terminate and reset */
     typedef fmi2Status fmi2SetupExperimentTYPE       (fmi2Component c,
                                                       fmi2Boolean toleranceDefined,

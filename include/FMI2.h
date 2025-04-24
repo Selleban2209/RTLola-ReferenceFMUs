@@ -73,8 +73,21 @@ struct FMI2Functions_ {
     fmi2GetBooleanStatusTYPE         *fmi2GetBooleanStatus;
     fmi2GetStringStatusTYPE          *fmi2GetStringStatus;
 
+    /***************************************************
+    RTLola functions 
+    ****************************************************/
+
+    fmi2GetRTLolaStatusTYPE *fmi2GetRTLolaStatus;
+    fmi2initializeRTLolaTYPE *fmi2initializeRTLola;
+
 };
 
+
+/***************************************************
+RTLola functions 
+****************************************************/
+FMI_STATIC void fmi2GetRTLolaStatus ();
+FMI_STATIC void fmi2initializeRTLola ();
 
 /***************************************************
 Common Functions
@@ -100,7 +113,7 @@ FMI_STATIC FMIStatus FMI2SetupExperiment(FMIInstance *instance,
     fmi2Boolean stopTimeDefined,
     fmi2Real stopTime);
 
-FMI_STATIC FMIStatus FMI2EnterInitializationMode(FMIInstance *instance);
+FMI_STATIC FMIStatus FMI2EnterInitializationMode(FMIInstance *instance, char *spec);
 
 FMI_STATIC FMIStatus FMI2ExitInitializationMode(FMIInstance *instance);
 

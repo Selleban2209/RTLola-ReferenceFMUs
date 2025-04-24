@@ -234,6 +234,14 @@ Functions for FMI2 for Co-Simulation
 #define fmi2GetBooleanStatus             fmi2FullName(fmi2GetBooleanStatus)
 #define fmi2GetStringStatus              fmi2FullName(fmi2GetStringStatus)
 
+
+/***************************************************
+Functions for RTLola 
+****************************************************/
+#define fmi2GetRTLolaStatus             fmi2FullName(fmi2GetRTLolaStatus)
+#define fmi2InitializeRTLola             fmi2FullName(fmi2InitializeRTLola)
+#define fmi2SendDataToRTLola             fmi2FullName(fmi2SendDataToRTLola)
+
 /* Version number */
 #define fmi2Version "2.0"
 
@@ -251,6 +259,11 @@ Common Functions
    FMI2_Export fmi2InstantiateTYPE  fmi2Instantiate;
    FMI2_Export fmi2FreeInstanceTYPE fmi2FreeInstance;
 
+
+/* RTLola functions */
+   FMI2_Export fmi2GetRTLolaStatusTYPE fmi2GetRTLolaStatus;
+   FMI2_Export fmi2InitializeRTLolaTYPE fmi2InitializeRTLola;
+   FMI2_Export fmi2SendDataToRTLolaTYPE fmi2SendDataToRTLola;
 /* Enter and exit initialization mode, terminate and reset */
    FMI2_Export fmi2SetupExperimentTYPE         fmi2SetupExperiment;
    FMI2_Export fmi2EnterInitializationModeTYPE fmi2EnterInitializationMode;
@@ -319,6 +332,9 @@ Functions for FMI2 for Co-Simulation
    FMI2_Export fmi2GetIntegerStatusTYPE fmi2GetIntegerStatus;
    FMI2_Export fmi2GetBooleanStatusTYPE fmi2GetBooleanStatus;
    FMI2_Export fmi2GetStringStatusTYPE  fmi2GetStringStatus;
+
+
+
 
 #ifdef __cplusplus
 }  /* end of extern "C" { */

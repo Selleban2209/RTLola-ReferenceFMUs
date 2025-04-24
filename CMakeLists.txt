@@ -1,4 +1,4 @@
-cmake_minimum_required (VERSION 3.17)
+cmake_minimum_required(VERSION 3.17)
 
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
@@ -7,7 +7,25 @@ FUNCTION(cat IN_FILE OUT_FILE)
   file(APPEND ${OUT_FILE} "${CONTENTS}")
 ENDFUNCTION()
 
-project (Reference-FMUs)
+project(Reference-FMUs)
+
+# Path to the Rust static library
+set(RUST_LIBRARY_PATH "${CMAKE_CURRENT_SOURCE_DIR}/rtlola_parser")
+
+# Import the Rust static library
+add_library(lola_parser STATIC IMPORTED)
+set_target_properties(lola_parser PROPERTIES
+    IMPORTED_LOCATION "${RUST_LIBRARY_PATH}/liblola_parser${CMAKE_SHARED_LIBRARY_SUFFIX}"  # Adjust for your platform
+)
+
+# Path to the RTLola integration shared library
+set(RTLOLA_LIBRARY_PATH "${CMAKE_CURRENT_SOURCE_DIR}/rtlola_integration")
+
+# Import the RTLola integration shared library
+add_library(rtlola_integration SHARED IMPORTED)
+set_target_properties(rtlola_integration PROPERTIES
+    IMPORTED_LOCATION "${RTLOLA_LIBRARY_PATH}/librtlola_integration${CMAKE_SHARED_LIBRARY_SUFFIX}"
+)
 
 set(FMI_VERSION 2 CACHE STRING "FMI Version")
 set_property(CACHE FMI_VERSION PROPERTY STRINGS 1 2 3)
@@ -17,7 +35,7 @@ set_property(CACHE FMI_TYPE PROPERTY STRINGS ME CS)
 
 if (${FMI_VERSION} GREATER 1)
   set(FMI_TYPE "")
-endif ()
+endif()
 
 set(FMI_ARCHITECTURE "" CACHE STRING "FMI Architecture")
 set_property(CACHE FMI_ARCHITECTURE PROPERTY STRINGS "" "aarch64" "x86" "x86_64")
@@ -27,10 +45,10 @@ if (NOT FMI_ARCHITECTURE)
     set(FMI_ARCHITECTURE "x86_64")
   elseif (${CMAKE_HOST_SYSTEM_PROCESSOR} MATCHES "aarch64")
     set(FMI_ARCHITECTURE "aarch64")
-  else ()
+  else()
     message(FATAL_ERROR "Unknown System Architecture: ${CMAKE_SYSTEM_PROCESSOR}")
-  endif ()
-endif ()
+  endif()
+endif()
 
 set(WITH_FMUSIM OFF CACHE BOOL "Add fmusim project")
 
@@ -38,11 +56,10 @@ if (MSVC)
   add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
 
   # Minimum supported MSVC version is 1800 = Visual Studio 12.0/2013
-  # See also https://cmake.org/cmake/help/latest/variable/MSVC_VERSION.html
   if (MSVC_VERSION VERSION_LESS 1800)
-    message (SEND_ERROR "MSVC_VERSION ${MSVC_VERSION} is not a supported Visual Studio compiler version. Please use Visual Studio 2013 or any later version.")
-  endif ()
-endif ()
+    message(SEND_ERROR "MSVC_VERSION ${MSVC_VERSION} is not a supported Visual Studio compiler version. Please use Visual Studio 2013 or any later version.")
+  endif()
+endif()
 
 # hide internal functions
 if (UNIX AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
@@ -50,46 +67,40 @@ if (UNIX AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
 endif()
 
 if (${FMI_VERSION} GREATER 2)
-
   if (WIN32)
     set(FMI_PLATFORM "${FMI_ARCHITECTURE}-windows")
   elseif (APPLE)
     set(FMI_PLATFORM "${FMI_ARCHITECTURE}-darwin")
-  else ()
+  else()
     set(FMI_PLATFORM "${FMI_ARCHITECTURE}-linux")
-  endif ()
-
-else ()
-
+  endif()
+else()
   if (WIN32)
     set(FMI_PLATFORM win)
   elseif (APPLE)
     set(FMI_PLATFORM darwin)
-  else ()
+  else()
     set(FMI_PLATFORM linux)
-  endif ()
+  endif()
 
   if ("${FMI_ARCHITECTURE}" STREQUAL "x86_64")
-    set (FMI_PLATFORM ${FMI_PLATFORM}64)
+    set(FMI_PLATFORM ${FMI_PLATFORM}64)
   elseif ("${FMI_ARCHITECTURE}" STREQUAL "x86")
-    set (FMI_PLATFORM ${FMI_PLATFORM}32)
-  else ()
+    set(FMI_PLATFORM ${FMI_PLATFORM}32)
+  else()
     message(FATAL_ERROR "Unsupported architecture for FMI version < 3.0: ${FMI_ARCHITECTURE}")
-  endif ()
-
-endif ()
+  endif()
+endif()
 
 if (APPLE)
-
   if ("${FMI_ARCHITECTURE}" STREQUAL "x86_64")
     set(CMAKE_OSX_ARCHITECTURES "x86_64")
   elseif ("${FMI_ARCHITECTURE}" STREQUAL "aarch64")
     set(CMAKE_OSX_ARCHITECTURES "arm64")
-  else ()
+  else()
     message(FATAL_ERROR "Unsupported architecture darwin: ${FMI_ARCHITECTURE}")
-  endif ()
-
-endif ()
+  endif()
+endif()
 
 message("FMI_PLATFORM: " ${FMI_PLATFORM})
 
@@ -100,19 +111,19 @@ if (${FMI_VERSION} LESS 3)
 #include \"model.c\"
 #include \"cosimulation.c\"
 ")
-endif ()
+endif()
 
-set (MODEL_NAMES BouncingBall Dahlquist Stair Feedthrough VanDerPol)
+set(MODEL_NAMES BouncingBall Dahlquist Stair Feedthrough VanDerPol)
 
 if (${FMI_VERSION} GREATER 1 OR "${FMI_TYPE}" STREQUAL "CS")
-  set (MODEL_NAMES ${MODEL_NAMES} Resource)
-endif ()
+  set(MODEL_NAMES ${MODEL_NAMES} Resource)
+endif()
 
 if (${FMI_VERSION} GREATER 2)
-  set (MODEL_NAMES ${MODEL_NAMES} StateSpace Clocks)
-endif ()
+  set(MODEL_NAMES ${MODEL_NAMES} StateSpace Clocks)
+endif()
 
-foreach (MODEL_NAME ${MODEL_NAMES})
+foreach(MODEL_NAME ${MODEL_NAMES})
 
 set(TARGET_NAME ${MODEL_NAME})
 
@@ -176,10 +187,14 @@ if (${FMI_VERSION} EQUAL 1 AND "${FMI_TYPE}" STREQUAL CS)
   target_compile_definitions(${TARGET_NAME} PRIVATE FMI_COSIMULATION)
 endif()
 
+# Updated include directories to use absolute paths
 target_include_directories(${TARGET_NAME} PRIVATE
-  include
-  ${MODEL_NAME}
+  ${CMAKE_CURRENT_SOURCE_DIR}/include
+  ${CMAKE_CURRENT_SOURCE_DIR}/${MODEL_NAME}
 )
+
+# Link the Rust static libraries to the model
+target_link_libraries(${TARGET_NAME} PRIVATE lola_parser rtlola_integration pthread dl)
 
 set(FMU_BUILD_DIR temp/${MODEL_NAME})
 
@@ -207,7 +222,7 @@ add_custom_command(TARGET ${TARGET_NAME} POST_BUILD COMMAND ${CMAKE_COMMAND} -E 
 )
 
 # model specific header and source
-foreach (SOURCE_FILE config.h model.c)
+foreach(SOURCE_FILE config.h model.c)
   add_custom_command(TARGET ${TARGET_NAME} POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy
     "${CMAKE_CURRENT_SOURCE_DIR}/${MODEL_NAME}/${SOURCE_FILE}"
     "${FMU_BUILD_DIR}/sources/${SOURCE_FILE}"
@@ -215,7 +230,7 @@ foreach (SOURCE_FILE config.h model.c)
 endforeach(SOURCE_FILE)
 
 # common headers
-foreach (SOURCE_FILE model.h cosimulation.h)
+foreach(SOURCE_FILE model.h cosimulation.h)
   add_custom_command(TARGET ${TARGET_NAME} POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy
     "${CMAKE_CURRENT_SOURCE_DIR}/include/${SOURCE_FILE}"
     "${FMU_BUILD_DIR}/sources/${SOURCE_FILE}"
@@ -223,7 +238,7 @@ foreach (SOURCE_FILE model.h cosimulation.h)
 endforeach(SOURCE_FILE)
 
 # common sources
-foreach (SOURCE_FILE fmi${FMI_VERSION}Functions.c cosimulation.c)
+foreach(SOURCE_FILE fmi${FMI_VERSION}Functions.c cosimulation.c)
   add_custom_command(TARGET ${TARGET_NAME} POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy
     "${CMAKE_CURRENT_SOURCE_DIR}/src/${SOURCE_FILE}"
     "${FMU_BUILD_DIR}/sources/${SOURCE_FILE}"
@@ -243,7 +258,16 @@ else()
   )
 endif()
 
-set(ARCHIVE_FILES "modelDescription.xml" "binaries" "sources")
+# Create the external directory and copy rtlola-cli
+add_custom_command(TARGET ${TARGET_NAME} POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E make_directory "${FMU_BUILD_DIR}/external"
+  COMMAND ${CMAKE_COMMAND} -E copy
+    "${CMAKE_CURRENT_SOURCE_DIR}/rtlola/rtlola-cli.exe"
+    "${FMU_BUILD_DIR}/external/rtlola-cli.exe"
+  COMMENT "Copying rtlola-cli to external directory"
+)
+
+set(ARCHIVE_FILES "modelDescription.xml" "binaries" "sources" )
 
 if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${MODEL_NAME}/resources")
   add_custom_command(TARGET ${TARGET_NAME} POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_directory
@@ -279,4 +303,4 @@ include(examples/Examples.cmake)
 
 if (WITH_FMUSIM)
   add_subdirectory(fmusim)
-endif ()
+endif()

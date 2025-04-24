@@ -19,7 +19,7 @@ int main(int argc, char* argv[]) {
     CALL(applyStartValues(S));
 
     CALL(FMI2SetupExperiment(S, fmi2False, 0.0, startTime, fmi2True, stopTime));
-    CALL(FMI2EnterInitializationMode(S));
+    CALL(FMI2EnterInitializationMode(S, NULL));
     CALL(FMI2ExitInitializationMode(S));
 
     for (uint64_t step = 0;; step++) {
