@@ -258,14 +258,6 @@ else()
   )
 endif()
 
-# Create the external directory and copy rtlola-cli
-add_custom_command(TARGET ${TARGET_NAME} POST_BUILD
-  COMMAND ${CMAKE_COMMAND} -E make_directory "${FMU_BUILD_DIR}/external"
-  COMMAND ${CMAKE_COMMAND} -E copy
-    "${CMAKE_CURRENT_SOURCE_DIR}/rtlola/rtlola-cli.exe"
-    "${FMU_BUILD_DIR}/external/rtlola-cli.exe"
-  COMMENT "Copying rtlola-cli to external directory"
-)
 
 set(ARCHIVE_FILES "modelDescription.xml" "binaries" "sources" )
 

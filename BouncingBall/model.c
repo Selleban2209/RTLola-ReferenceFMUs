@@ -12,7 +12,9 @@
 #ifdef _WIN32
     #define POPEN _popen
     #define PCLOSE _pclose
+    #define strdup _strdup
 #else
+    #define strdup strdup
     #define POPEN popen
     #define PCLOSE pclose
 #endif
@@ -44,16 +46,16 @@ void setStartValues(ModelInstance *comp) {
   
     //M(rtlola_spec) = "path/to/spec.lola";
 
-    strncpy(M(rtlola_spec),  "bouncing_ball_spec.lola", STRING_MAX_LEN);
+    strncpy(M(rtlola_spec),  "specifications/bouncing_ball_spec.lola", STRING_MAX_LEN);
     strncpy(M(rtlola_output), "Set me!", STRING_MAX_LEN);
     setRTLolaMode(comp);
     setMonitorValueRefrences(comp);
     const unsigned int monitored_vrs[] = {vr_h};  // Local array
-    RTLolaMonitor_Init(&comp->rtlola_monitor, 
+    RTLolaMonitor_Setup(&comp->rtlola_monitor, 
     M(rtlola_spec),
     monitored_vrs,
-    M(rtlola_num_vars),
-    false);
+    M(rtlola_num_vars)
+);
     //getMonitorValues(comp);
 
     
@@ -64,7 +66,7 @@ Status calculateValues(ModelInstance *comp) {
     // nothing to do
     return OK;
 }
-const char* getRTLolaHeaderVariableName(const unsigned int vr) {
+const char* getVariableNameFromValueReference(const unsigned int vr) {
 
     switch (vr) {
         case vr_time: return "time";
@@ -77,7 +79,7 @@ const char* getRTLolaHeaderVariableName(const unsigned int vr) {
     }
 }
 
-unsigned int getRTLolaHeaderVariableVR(const char* name) {
+unsigned int getValueReferenceFromVariableName(const char* name) {
     if (strcmp(name, "time") == 0) return vr_time;
     if (strcmp(name, "h") == 0)    return vr_h;
     if (strcmp(name, "v") == 0)    return vr_v;
@@ -131,7 +133,8 @@ Status setFloat64(ModelInstance* comp, ValueReference vr, const double value[], 
 
         case vr_h:
 #if FMI_VERSION > 1
-            if (comp->state != Instantiated &&
+            if (comp->type == ModelExchange &&
+                comp->state != Instantiated &&
                 comp->state != InitializationMode &&
                 comp->state != ContinuousTimeMode) {
                 logError(comp, "Variable \"h\" can only be set in Instantiated Mode, Initialization Mode, and Continuous Time Mode.");
@@ -140,12 +143,13 @@ Status setFloat64(ModelInstance* comp, ValueReference vr, const double value[], 
 #endif
 
             M(h) = value[(*index)++];
-            printf("h set to: %f\n", M(h));
+            //printf("h set to: %f\n", M(h));
             return OK;
 
         case vr_v:
 #if FMI_VERSION > 1
-            if (comp->state != Instantiated &&
+            if (comp->type == ModelExchange &&
+                comp->state != Instantiated &&
                 comp->state != InitializationMode &&
                 comp->state != ContinuousTimeMode) {
                 logError(comp, "Variable \"v\" can only be set in Instantiated Mode, Initialization Mode, and Continuous Time Mode.");
@@ -280,7 +284,7 @@ Status setString(ModelInstance* comp, ValueReference vr, const char* const value
             size_t new_num_vars =  nValues - 1; // Exclude the first value (the spec itself)
             unsigned int *new_monitor_var_refs = malloc(new_num_vars * sizeof(unsigned int));
             for (size_t i = 0; i < new_num_vars; i++) {
-                new_monitor_var_refs[i] = getRTLolaHeaderVariableVR(values[(*index)++]);
+                new_monitor_var_refs[i] = getValueReferenceFromVariableName(values[(*index)++]);
                 //printf("new_monitor_var_refs[%ld] = %u\n", i, new_monitor_var_refs[i]);
             }
             if (comp->rtlola_monitor.monitored_vrs) {
@@ -368,8 +372,8 @@ Status getOutputDerivative(ModelInstance *comp, ValueReference valueReference, i
 
 Status eventUpdate(ModelInstance *comp) {
     
-
-    printf("Event Update\n");
+    //log info 
+    logFormatted(comp, LOG_INFO, "EVENT", "FMU Event update called --> Calculating ball bounce.");
     if (M(h) <= 0 && M(v) < 0) {
 
         M(h) = DBL_MIN;  // slightly above 0 to avoid zero-crossing

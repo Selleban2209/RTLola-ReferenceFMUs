@@ -14,13 +14,18 @@
 #include <stdbool.h> // for bool
 #include <stdint.h>
 
+// if linux platform use these includes 
 
-
-#include <stdio.h>     // For printf(), perror(), etc.
-#include <stdlib.h>    // For exit(), EXIT_FAILURE, etc.
+#ifdef __linux__
 #include <unistd.h>    // For pipe(), fork(), dup2(), execlp(), close()
-#include <sys/types.h> // For pid_t
 #include <sys/wait.h>  // For wait() (if you need to wait for the child process)
+#endif  
+
+ 
+
+#include <stdlib.h>    // For exit(), EXIT_FAILURE, etc.
+#include <stdio.h>     // For printf(), perror(), etc.
+#include <sys/types.h> // For pid_t
 #include <string.h>    // For string operations like memset(), strcpy()
 #include <stdarg.h>
 #include "config.h"
@@ -263,13 +268,12 @@ Status eventUpdate(ModelInstance *comp);
 //RTLOLa funcitonality 
 void setMonitorValueRefrences(ModelInstance *comp);
 Status getMonitorValues(ModelInstance *comp);
-const char* getRTLolaHeaderVariableName(const unsigned int vr);
+const char* getVariableNameFromValueReference(const unsigned int vr);
+unsigned int getValueReferenceFromVariableName(const char* name);
 //Unused
 void setRTLolaMode(ModelInstance *comp);
 void startRTLolaMonitor(ModelInstance *comp);
 //void sendDataToRTLola(ModelInstance *comp);
-void checkRTLolaAlerts(ModelInstance *comp);
-void stopRTLolaMonitor(ModelInstance *comp); 
 char* modelStateToString(ModelState state);
 
 bool invalidNumber(ModelInstance *comp, const char *f, const char *arg, size_t actual, size_t expected);

@@ -75,8 +75,8 @@ typedef struct {
 
     int input_pipe[2];  // Pipe for sending data to RTLola
     int output_pipe[2]; // Pipe for receiving output from RTLola    
-    pid_t child_pid;    // Process ID of the child process
-    pthread_t reader_thread;
+    //pid_t child_pid;    // Process ID of the child process
+    //pthread_t reader_thread;
     bool is_active;                 // Whether the monitor is active
     bool spec_switch_requested;     // Whether a spec switch has been requested
     bool spec_switch_pending;       // Whether a spec switch is pending
@@ -106,7 +106,10 @@ void RTLolaMonitor_Init(RTLolaMonitor* monitor,
                         const unsigned int* vrs,
                         size_t num_vars, bool execMode);
 
-
+void RTLolaMonitor_Setup(RTLolaMonitor* monitor, 
+                            const char* spec_path,
+                            const unsigned int* vrs,
+                            size_t num_vars);
 // Start monitoring (called during enterInitializationMode)
 bool RTLolaMonitor_Start(RTLolaMonitor* monitor);
 
@@ -115,25 +118,21 @@ bool RTLolaMonitor_SendData_v2(RTLolaMonitor* monitor,
                                double time,
                                fmi2Component instanceRTLola);
 
-bool RTLolaMonitor_SendData_v3(RTLolaMonitor* monitor, 
-                                double time,
-                                fmi3Instance instance);
-
-bool RTLolaMonitor_SendData_native(RTLolaMonitor* monitor, 
+bool RTLolaMonitor_SendData_FMI3(RTLolaMonitor* monitor, 
                                 double time,
                                 fmi3Instance instance);
 
 
-// Cleanup (called during terminate)
+// Cleanup (called during model termination)
 void RTLolaMonitor_Cleanup(RTLolaMonitor* monitor);
 
 // Adjust FMU variables based on triggers
 bool adjustFMUVariables(RTLolaMonitor* monitor, const unsigned int* vrs, fmi2Component instance);
 
-// Switch RTLola specification (to be implemented)
-//void SwitchRTLolaSpec(RTLolaMonitor* monitor, const char* spec_path);
+// Switch RTLola specification 
+//bool RTLolaMonitor_HandleSpecSwitch(    fmi3Instance instance);
 
-// New functions for trigger evaluation
+//  functions for trigger evaluation
 void RTLolaMonitor_ParseSpec(RTLolaMonitor* monitor, const char* json_spec); // Parse JSON specification
 void RTLolaMonitor_EvaluateTriggers(RTLolaMonitor* monitor, const char* output); // Evaluate triggers based on feedback
 void RTLolaMonitor_TakeActions(RTLolaMonitor* monitor, const char* trigger_message); // Take actions based on triggered conditions
