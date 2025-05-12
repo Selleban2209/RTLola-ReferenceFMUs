@@ -20,8 +20,8 @@ This repository is a fork of the original [Modelica Reference FMUs](https://gith
 While maintaining all original functionality, these FMUs require:
 
 1. Linking against RTLola shared libraries (`librtlola_ffi`)
-2. Additional environment variables for monitoring configuration
-3. New CSV output columns for monitoring triggers
+2. Additional environment variables for monitoring configuration (e.g rtlola_spec, and rtlola_output).
+
 
 > ℹ️ For standard FMI usage without monitoring, please see the [original README](README_ORIGINAL.md).
 
