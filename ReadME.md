@@ -25,29 +25,77 @@ While maintaining all original functionality, these FMUs require:
 
 > ℹ️ For standard FMI usage without monitoring, please see the [original README](README_ORIGINAL.md).
 
+
+Here’s a polished **"Related Repositories"** section for your `RTLola-ReferenceFMUs` README, with standardized references to your other projects:
+
+---
+
+### Related Repositories  
+This project is part of an ecosystem for RTLola-FMU integration. Key related components:  
+
+1. **[FMU Test Environment](https://github.com/Selleban2209/FMU_test_env)**  
+   - A dedicated framework for validating RTLola-enhanced FMUs  
+   - Features automated test cases and performance benchmarking  
+   - Supports co-simulation scenarios with trigger injection  
+
+2. **[RTLola Parser](https://github.com/Selleban2209/rtloa_parser)**  
+   - Lightweight parser for preprocessing RTLola specifications  
+   - Handles variable mapping between RTLola and FMI conventions  
+   - Validates spec compatibility before FMU integration  
+
+3. **[RTLola Integration Core](https://github.com/Selleban2209/RTLola_integration)**  
+   - Shared library with FFI bindings for Rust/C interoperability  
+   - Implements the core monitoring state machine  
+   - Used as a dependency by this repository  
+
+---
+
 ## Building
 
-Follow the original build instructions, with these additions:
+Here's a clear, step-by-step build guide for your README:
 
-```bash
-# Required new dependency
-git clone https://github.com/rtlola/rtlola-ffi.git
-export RTLOLA_FFI_PATH=/path/to/rtlola-ffi
-CMake options now include:
+### Building RTLola-Enabled FMUs
 
-WITH_RTLOLA (ON by default)
+1. **Modify FMU for Monitoring**  
+   - Add ValueReference ↔ VariableName mapping functions  
+   - Extend `modelDescription.xml` with RTLola-specific variables
+   - Modify getters/setters to support monitoring (see `BouncingBall` example)
+   
 
-RTLOLA_SPEC_FILE (default: monitoring.lola)
+2. **Compile Rust Components**  
+   ```bash
+   cd rtlola-ffi/
+   cargo build --release
+   ```
+   Produces: `target/release/librtlola_ffi.{so,dylib,dll}`
 
-Examples
-bash
-# Simulate with monitoring
-fmusim --output-variable=rtlola_triggers BouncingBall.fmu
-Repository Structure
-Added/modified files:
+3. **Configure CMake Integration**  
+   Add to `CMakeLists.txt`:
+   ```cmake
+   # RTLola FFI linking
+   find_library(RTLOLA_FFI rtlola_ffi PATHS "${PROJECT_SOURCE_DIR}/lib")
+   target_link_libraries(${PROJECT_NAME} PRIVATE ${RTLOLA_FFI})
+   ```
 
-/include/rtlola_interface.h    # Monitoring API
-/src/rtlola_bridge.c           # FFI implementation
-/specs/                        # Example RTLola specs
-License
-Like the original, this fork is released under the 2-Clause BSD License, with additional copyright notices for RTLola components.
+
+### Building RTLola-Enabled FMUs
+
+4. **Build FMU**  
+   The build process from this point follows the original Reference-FMUs procedure
+
+   > **Note**: For detailed build options and platform-specific instructions, refer to [README_ORIGINAL.md](README_ORIGINAL.md#build-the-fmus)
+
+5. **Validation**  
+   Test using the [FMU Test Environment](https://github.com/Selleban2209/FMU_test_env):
+   ```bash
+   ./test_runner --monitoring=rtlola BouncingBall.fmu
+   ```
+
+**Key Files Modified**:  
+- `src/model.c`: Added monitoring hooks  
+- `resources/rtlola_spec.lola`: Monitoring specification  
+- `CMakeLists.txt`: FFI library linking  
+
+**compatibility**:
+- Current solution only tested for Ubuntu 20.04 LTS
+ 
