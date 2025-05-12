@@ -6,13 +6,14 @@ This repository is a fork of the original [Modelica Reference FMUs](https://gith
 
 - **RTLola Integration**: All FMUs now include embedded RTLola monitoring through:
   - Direct FFI calls to RTLola interpreter
+  - Depricated commented out code of the a pipe solution calling upon the RTLola-CLI program.
   - Type-safe data mapping between FMI and RTLola
   - Real-time trigger handling
 
 - **Enhanced Interface**:
-  - Added monitoring-specific variables to modelDescription.xml
+  - Added monitoring-specific variables to modelDescription.xml of models with the integration applied.(currently only BoucningBall)
   - New API calls for specification switching
-  - Integrated trigger logging
+  - Integrated FMI call and RTLola call logging 
 
 ## Usage Differences from Original
 
