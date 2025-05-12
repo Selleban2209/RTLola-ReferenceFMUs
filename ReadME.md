@@ -90,11 +90,7 @@ Here's a clear, step-by-step build guide for your README:
    ```bash
    ./test_runner --monitoring=rtlola BouncingBall.fmu
    ```
-
-**Key Files Modified**:  
-- `src/model.c`: Added monitoring hooks  
-- `resources/rtlola_spec.lola`: Monitoring specification  
-- `CMakeLists.txt`: FFI library linking  
+  
 
 **compatibility**:
 - Current solution only tested for Ubuntu 20.04 LTS
