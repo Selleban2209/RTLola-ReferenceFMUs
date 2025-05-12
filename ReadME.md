@@ -26,8 +26,6 @@ While maintaining all original functionality, these FMUs require:
 > ℹ️ For standard FMI usage without monitoring, please see the [original README](README_ORIGINAL.md).
 
 
-Here’s a polished **"Related Repositories"** section for your `RTLola-ReferenceFMUs` README, with standardized references to your other projects:
-
 ---
 
 ### Related Repositories  
@@ -52,7 +50,6 @@ This project is part of an ecosystem for RTLola-FMU integration. Key related com
 
 ## Building
 
-Here's a clear, step-by-step build guide for your README:
 
 ### Building RTLola-Enabled FMUs
 
@@ -92,6 +89,6 @@ Here's a clear, step-by-step build guide for your README:
    ```
   
 
-**compatibility**:
+**Compatibility**:
 - Current solution only tested for Ubuntu 20.04 LTS
  
