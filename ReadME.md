@@ -83,11 +83,7 @@ This project is part of an ecosystem for RTLola-FMU integration. Key related com
    > **Note**: For detailed build options and platform-specific instructions, refer to [README_ORIGINAL.md](README_ORIGINAL.md#build-the-fmus)
 
 5. **Validation**  
-   Test using the [FMU Test Environment](https://github.com/Selleban2209/FMU_test_env):
-   ```bash
-   ./test_runner --monitoring=rtlola BouncingBall.fmu
-   ```
-  
+   Test using the [FMU Test Environment](https://github.com/Selleban2209/FMU_test_env): 
 
 **Compatibility**:
 - Current solution only tested for Ubuntu 20.04 LTS
