@@ -26,15 +26,7 @@
 #define EVENT_EPSILON (1e-10)
 
 
-typedef struct {
 
-    const char* vairbaleName;
-    char** viarableNames;
-    bool isTriggered;
-    bool (*condition)(double, double); // Function pointer for condition, e.g., greaterThan
-    void (*action)(const char*); 
-
-} MonitorTrigger;
 //Struct for monitor capabillities  
 
 void setStartValues(ModelInstance *comp) {
@@ -258,14 +250,7 @@ Status setString(ModelInstance* comp, ValueReference vr, const char* const value
 
     switch (vr) {
         case vr_rtlola_spec:
-            // Check if the FMU is in a valid state for setting the specification
-           /*
-           if (comp->state != Instantiated && comp->state != InitializationMode) {
-            logError(comp, "Variable rtlola_spec can only be set in Instantiated or Initialization Mode.");
-            return Error;
-        }
-        */
-
+    
             // Free the old specification path if it exists
             if (comp->rtlola_spec) {
                 free(comp->rtlola_spec);
@@ -278,9 +263,8 @@ Status setString(ModelInstance* comp, ValueReference vr, const char* const value
                 logError(comp, "Failed to allocate memory for rtlola_spec.");
                 return Error;
             }
-            //printf("RTLola specification set to: %s\n", comp->rtlola_spec);
+           
             // Signal that a specification switch is requested
-            //size_t  values_len = sizeof(values) / sizeof(values[0]);
             size_t new_num_vars =  nValues - 1; // Exclude the first value (the spec itself)
             unsigned int *new_monitor_var_refs = malloc(new_num_vars * sizeof(unsigned int));
             for (size_t i = 0; i < new_num_vars; i++) {
@@ -302,7 +286,6 @@ Status setString(ModelInstance* comp, ValueReference vr, const char* const value
                 return Error;
             }
             comp->rtlola_monitor.spec_switch_requested = true;
-           // printf("RTLola specification switch requested. New spec: %s\n", comp->rtlola_spec);
             break;
 
         case vr_rtlola_vars: {
