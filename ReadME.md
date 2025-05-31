@@ -61,17 +61,21 @@ This project is part of an ecosystem for RTLola-FMU integration. Key related com
 
 2. **Compile Rust Components**  
    ```bash
-   cd rtlola-ffi/
+   cd rtlola_integration/
    cargo build --release
    ```
-   Produces: `target/release/librtlola_ffi.{so,dylib,dll}`
+   Produces: `target/release/librtlola_integration.{so,dylib,dll}`
 
 3. **Configure CMake Integration**  
    Add to `CMakeLists.txt`:
-   ```cmake
-   # RTLola FFI linking
-   find_library(RTLOLA_FFI rtlola_ffi PATHS "${PROJECT_SOURCE_DIR}/lib")
-   target_link_libraries(${PROJECT_NAME} PRIVATE ${RTLOLA_FFI})
+     ```cmake
+    add_library(rtlola_integration SHARED IMPORTED)
+    set_target_properties(rtlola_integration PROPERTIES
+      IMPORTED_LOCATION "${RTLOLA_LIBRARY_PATH}/librtlola_integration${CMAKE_SHARED_LIBRARY_SUFFIX}"
+    )
+  
+    target_link_libraries(${TARGET_NAME} PRIVATE lola_parser rtlola_integration pthread dl)
+   
    ```
 
 
